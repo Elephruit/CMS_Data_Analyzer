@@ -9,6 +9,7 @@ import {
   Trash
 } from 'lucide-react';
 import { PageHeader } from '../components/ui/Primitives';
+import { useFilters } from '../context/FilterContext';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -27,8 +28,8 @@ const MONTH_NAMES = [
 ];
 
 export const DataManagement: React.FC = () => {
-  const [ingestedMonths, setIngestedMonths] = useState<IngestedMonth[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { availableMonths: ingestedMonths, refreshAvailableMonths } = useFilters();
+  const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState<Record<string, boolean>>({});
   
   const currentYear = new Date().getFullYear();
@@ -41,23 +42,6 @@ export const DataManagement: React.FC = () => {
     }
     return y;
   }, [currentYear]);
-
-  const fetchMonths = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch('http://127.0.0.1:3000/api/data/months');
-      const data = await response.json();
-      setIngestedMonths(data);
-    } catch (error) {
-      console.error('Failed to fetch months:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchMonths();
-  }, []);
 
   const isIngested = (year: number, month: number) => {
     return ingestedMonths.some(m => m.year === year && m.month === month);
@@ -82,7 +66,7 @@ export const DataManagement: React.FC = () => {
       });
       
       if (response.ok) {
-        await fetchMonths();
+        await refreshAvailableMonths();
       }
     } catch (error) {
       console.error(`Action ${action} failed for ${monthKey}:`, error);
@@ -102,7 +86,7 @@ export const DataManagement: React.FC = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ year }),
         });
-        if (response.ok) await fetchMonths();
+        if (response.ok) await refreshAvailableMonths();
       } else {
         for (let m = 1; m <= 12; m++) {
           if (!isIngested(year, m) && !isFuture(year, m)) {
@@ -124,7 +108,10 @@ export const DataManagement: React.FC = () => {
         subtitle="Provision and manage multi-year CMS datasets. High-performance Parquet storage management."
         action={
           <button 
-            onClick={fetchMonths}
+            onClick={() => {
+              setLoading(true);
+              refreshAvailableMonths().finally(() => setLoading(false));
+            }}
             className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs font-bold text-slate-300 transition-all"
           >
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />

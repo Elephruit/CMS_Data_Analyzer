@@ -1,6 +1,10 @@
 {
   "ingested_months": [
     {
+      "year": 2024,
+      "month": 12
+    },
+    {
       "year": 2025,
       "month": 1
     },
@@ -10,7 +14,8 @@
     }
   ],
   "source_hashes": {
-    "2025-02": "22075267650e69309738632613ab967875f848692b9226b17b1c1b9b56a55846",
-    "2025-01": "fff970d9176efab0f8dadbd41da29c4b51f8fd97ea2c7dc3a18eafdf545e3e1d"
+    "2025-01": "fff970d9176efab0f8dadbd41da29c4b51f8fd97ea2c7dc3a18eafdf545e3e1d",
+    "2024-12": "24230da4f1ea89585855e1d2237ba5c90bb1224b4306eba2d6e4671d86926a8e",
+    "2025-02": "22075267650e69309738632613ab967875f848692b9226b17b1c1b9b56a55846"
   }
 }

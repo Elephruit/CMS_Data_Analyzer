@@ -1,18 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Bell, Info, Search as SearchIcon, Database } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export const Header: React.FC = () => {
-  const [months, setMonths] = useState<any[]>([]);
   const [searchQuery, setSearchSearchQuery] = useState('');
   const navigate = useNavigate();
-
-  useEffect(() => {
-    fetch('http://127.0.0.1:3000/api/data/months')
-      .then(res => res.json())
-      .then(data => setMonths(data))
-      .catch(err => console.error(err));
-  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,10 +13,6 @@ export const Header: React.FC = () => {
       // In a real app, we'd pass the search query to the PlanDetail page via state or URL
     }
   };
-
-  const dateRangeStr = months.length > 0 
-    ? `${new Date(months[0].year, months[0].month - 1).toLocaleString('default', { month: 'short', year: 'numeric' })} - ${new Date(months[months.length-1].year, months[months.length-1].month - 1).toLocaleString('default', { month: 'short', year: 'numeric' })}`
-    : 'Loading dataset...';
 
   return (
     <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 shrink-0">
@@ -43,7 +31,7 @@ export const Header: React.FC = () => {
         <div className="flex items-center gap-4 text-xs font-medium">
           <div className="flex items-center gap-2 px-3 py-1 bg-slate-800 rounded-full border border-slate-700">
             <Database className="w-3 h-3 text-sky-500" />
-            <span className="text-slate-300">Dataset: {dateRangeStr}</span>
+            <span className="text-slate-300 uppercase tracking-widest text-[10px] font-bold">Local Analytical Store</span>
           </div>
         </div>
       </div>

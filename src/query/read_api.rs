@@ -416,24 +416,30 @@ impl QueryEngine {
     }
 
     pub fn get_global_trend(&self, current_filters: &serde_json::Value) -> Result<Vec<(u32, u64)>> {
+        let (analysis_yyyymm, _) = self.get_analysis_months(current_filters);
         let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
+
         if let Some(series_cache) = &self.series_cache {
             for series in series_cache.values() {
-                // For global trend, we need to find which version was active for each point in the trend
-                // For simplicity in MVP, we match against filters using the latest month's logic
-                if self.matches_filters(series, current_filters, self.latest_yyyymm, None) {
+                // Use analysis_yyyymm for filter matching to find the right version for the selected period
+                if self.matches_filters(series, current_filters, analysis_yyyymm, None) {
                     let bitmap = series.presence_bitmap;
                     let mut pos = 0;
                     let start_year = (series.start_month_key / 100) as i32;
                     let start_month = (series.start_month_key % 100) as i32;
+
                     for i in 0..64 {
                         if (bitmap >> i) & 1 != 0 {
                             let curr_month_total = start_month - 1 + i as i32;
                             let year = start_year + curr_month_total / 12;
                             let month = (curr_month_total % 12) + 1;
                             let yyyymm = (year as u32) * 100 + (month as u32);
-                            if let Some(&enrollment) = series.enrollments.get(pos) {
-                                *monthly_totals.entry(yyyymm).or_insert(0) += enrollment as u64;
+                            
+                            // Only include data points up to the selected analysis month
+                            if yyyymm <= analysis_yyyymm {
+                                if let Some(&enrollment) = series.enrollments.get(pos) {
+                                    *monthly_totals.entry(yyyymm).or_insert(0) += enrollment as u64;
+                                }
                             }
                             pos += 1;
                         }
@@ -441,6 +447,7 @@ impl QueryEngine {
                 }
             }
         }
+
         let mut result: Vec<_> = monthly_totals.into_iter().collect();
         result.sort_by_key(|(m, _)| *m);
         Ok(result)
