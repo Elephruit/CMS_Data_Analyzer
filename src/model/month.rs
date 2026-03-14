@@ -56,3 +56,28 @@ impl fmt::Display for YearMonth {
         write!(f, "{:04}-{:02}", self.year, self.month)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_year_month_parsing() {
+        let ym: YearMonth = "2025-01".parse().unwrap();
+        assert_eq!(ym.year, 2025);
+        assert_eq!(ym.month, 1);
+        assert_eq!(ym.to_yyyymm(), 202501);
+    }
+
+    #[test]
+    fn test_year_month_display() {
+        let ym = YearMonth::new(2025, 3).unwrap();
+        assert_eq!(format!("{}", ym), "2025-03");
+    }
+
+    #[test]
+    fn test_invalid_month() {
+        assert!(YearMonth::new(2025, 13).is_err());
+        assert!(YearMonth::new(2025, 0).is_err());
+    }
+}

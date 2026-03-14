@@ -59,3 +59,48 @@ impl PlanCountySeries {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_series_add_and_get() {
+        let mut series = PlanCountySeries {
+            plan_key: 1,
+            county_key: 1,
+            start_month_key: 202501,
+            presence_bitmap: 0,
+            enrollments: Vec::new(),
+        };
+
+        series.add_month(202501, 100);
+        series.add_month(202503, 120);
+        series.add_month(202502, 110);
+
+        assert_eq!(series.get_enrollment(202501), Some(100));
+        assert_eq!(series.get_enrollment(202502), Some(110));
+        assert_eq!(series.get_enrollment(202503), Some(120));
+        assert_eq!(series.get_enrollment(202504), None);
+        
+        // Check internal order
+        assert_eq!(series.enrollments, vec![100, 110, 120]);
+        assert_eq!(series.presence_bitmap, 0b111);
+    }
+
+    #[test]
+    fn test_series_update() {
+        let mut series = PlanCountySeries {
+            plan_key: 1,
+            county_key: 1,
+            start_month_key: 202501,
+            presence_bitmap: 0,
+            enrollments: Vec::new(),
+        };
+
+        series.add_month(202501, 100);
+        series.add_month(202501, 105);
+        assert_eq!(series.get_enrollment(202501), Some(105));
+        assert_eq!(series.enrollments.len(), 1);
+    }
+}
