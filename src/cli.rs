@@ -37,6 +37,12 @@ pub enum Commands {
     ValidateStore,
     /// Rebuild the high-speed binary cache
     RebuildCache,
+    /// Start the web server
+    Serve {
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 3000)]
+        port: u16,
+    },
     /// List some plans from the store
     ListPlans {
         /// Number of plans to list

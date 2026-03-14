@@ -5,6 +5,7 @@ mod ingest;
 mod storage;
 mod query;
 mod util;
+mod api;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -118,6 +119,10 @@ async fn main() -> anyhow::Result<()> {
             }
             storage::binary_cache::save_series_cache(&all_series, &cache_dir.join("series_values.bin"))?;
             log::info!("Cached {} series", all_series.len());
+        }
+        Commands::Serve { port } => {
+            log::info!("Starting server on port {}", port);
+            api::server::start_server(port, store_dir).await?;
         }
         Commands::ListPlans { limit } => {
             let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
