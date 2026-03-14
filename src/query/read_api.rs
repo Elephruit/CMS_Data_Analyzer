@@ -677,4 +677,83 @@ impl QueryEngine {
             "counties": counties_list.into_iter().take(50).collect::<Vec<_>>()
         }))
     }
+
+    pub fn get_growth_analytics(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let sel_states: Vec<String> = filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+
+        let mut latest_yyyymm = 0;
+        let mut prior_yyyymm = 0;
+        let mut total_growth: i64 = 0;
+        let mut high_flyers = Vec::new();
+
+        if self.cache_enabled {
+            let plan_lookup = self.plan_lookup.as_ref().unwrap();
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            // Find latest/prior months
+            let mut all_months: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+            for series in series_cache.values() {
+                let start_year = (series.start_month_key / 100) as i32;
+                let start_month = (series.start_month_key % 100) as i32;
+                for i in 0..64 {
+                    if (series.presence_bitmap >> i) & 1 != 0 {
+                        all_months.insert((start_year as u32 * 100) + (start_month as u32 + i as u32 - 1));
+                    }
+                }
+            }
+            let months_vec: Vec<_> = all_months.into_iter().collect();
+            latest_yyyymm = *months_vec.last().unwrap_or(&0);
+            prior_yyyymm = if months_vec.len() >= 2 { months_vec[months_vec.len() - 2] } else { 0 };
+
+            let mut plan_aggregates: HashMap<u32, (u64, u64)> = HashMap::new();
+
+            for series in series_cache.values() {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                if let Some(c) = county {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    if state_match {
+                        let latest_val = series.get_enrollment(latest_yyyymm).unwrap_or(0);
+                        let prior_val = series.get_enrollment(prior_yyyymm).unwrap_or(0);
+                        
+                        let entry = plan_aggregates.entry(series.plan_key).or_insert((0, 0));
+                        entry.0 += latest_val as u64;
+                        entry.1 += prior_val as u64;
+                        
+                        total_growth += (latest_val as i64) - (prior_val as i64);
+                    }
+                }
+            }
+
+            for (plan_key, (latest, prior)) in plan_aggregates {
+                if latest > 500 { // Only significant plans
+                    let change = latest as i64 - prior as i64;
+                    let pct = if prior > 0 { (change as f64 / prior as f64) * 100.0 } else { 0.0 };
+                    if pct > 5.0 || change > 1000 {
+                        if let Some(p) = plan_lookup.get(&plan_key) {
+                            high_flyers.push(serde_json::json!({
+                                "name": p.plan_name,
+                                "contract": p.contract_id,
+                                "plan": p.plan_id,
+                                "current": latest,
+                                "change": change,
+                                "percent": pct
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        high_flyers.sort_by_key(|h| std::cmp::Reverse((h["percent"].as_f64().unwrap_or(0.0) * 100.0) as i64));
+
+        Ok(serde_json::json!({
+            "latestMonth": latest_yyyymm,
+            "priorMonth": prior_yyyymm,
+            "totalGrowth": total_growth,
+            "highFlyers": high_flyers.into_iter().take(20).collect::<Vec<_>>()
+        }))
+    }
 }
