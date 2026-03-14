@@ -79,7 +79,45 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::RebuildCache => {
             log::info!("Rebuilding cache");
-            // TODO: Implement rebuild_cache
+            let cache_dir = store_dir.join("cache");
+            std::fs::create_dir_all(&cache_dir)?;
+
+            // 1. Plan Lookup
+            let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
+            let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
+            let plan_map: std::collections::HashMap<u32, model::PlanDim> = plans.into_iter().map(|p| (p.plan_key, p)).collect();
+            storage::binary_cache::save_plan_lookup(&plan_map, &cache_dir.join("plan_lookup.bin"))?;
+            log::info!("Cached {} plans", plan_map.len());
+
+            // 2. County Lookup
+            let county_dim_path = store_dir.join("dims").join("county_dim.parquet");
+            let counties = storage::parquet_store::load_county_dim(&county_dim_path)?;
+            let county_map: std::collections::HashMap<String, model::CountyDim> = counties.into_iter().map(|c| (format!("{}|{}", c.state_code, c.county_name), c)).collect();
+            storage::binary_cache::save_county_lookup(&county_map, &cache_dir.join("county_lookup.bin"))?;
+            log::info!("Cached {} counties", county_map.len());
+
+            // 3. Series Cache
+            let facts_dir = store_dir.join("facts");
+            let mut all_series = std::collections::HashMap::new();
+            if facts_dir.exists() {
+                for year_entry in std::fs::read_dir(facts_dir)? {
+                    let year_path = year_entry?.path();
+                    if year_path.is_dir() {
+                        for state_entry in std::fs::read_dir(year_path)? {
+                            let state_path = state_entry?.path();
+                            if state_path.is_dir() {
+                                let series_path = state_path.join("plan_county_series.parquet");
+                                let series_list = storage::parquet_store::load_series_partition(&series_path)?;
+                                for s in series_list {
+                                    all_series.insert((s.plan_key, s.county_key), s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            storage::binary_cache::save_series_cache(&all_series, &cache_dir.join("series_values.bin"))?;
+            log::info!("Cached {} series", all_series.len());
         }
         Commands::ListPlans { limit } => {
             let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
