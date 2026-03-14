@@ -1,13 +1,10 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  Database, 
   Download, 
   Trash2, 
   RefreshCw, 
   CheckCircle2, 
-  AlertCircle, 
   Calendar,
-  ChevronDown,
   CloudDownload,
   Trash
 } from 'lucide-react';
@@ -25,8 +22,8 @@ interface IngestedMonth {
 }
 
 const MONTH_NAMES = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
 export const DataManagement: React.FC = () => {
@@ -107,7 +104,6 @@ export const DataManagement: React.FC = () => {
         });
         if (response.ok) await fetchMonths();
       } else {
-        // Sequentially ingest missing months for the year
         for (let m = 1; m <= 12; m++) {
           if (!isIngested(year, m) && !isFuture(year, m)) {
             await handleAction('ingest', year, m);
@@ -122,64 +118,59 @@ export const DataManagement: React.FC = () => {
   };
 
   return (
-    <div className="max-w-[1200px] mx-auto space-y-8 pb-20">
+    <div className="max-w-[1400px] mx-auto space-y-10 pb-24 px-4">
       <PageHeader 
-        title="Data Management" 
-        subtitle="Control your local analytical store. Ingest and manage CMS datasets by period."
+        title="Analytical Store Management" 
+        subtitle="Provision and manage multi-year CMS datasets. High-performance Parquet storage management."
         action={
           <button 
             onClick={fetchMonths}
-            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-all group"
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs font-bold text-slate-300 transition-all"
           >
-            <RefreshCw className={cn("w-5 h-5 text-slate-400 group-hover:text-sky-400 transition-colors", loading && "animate-spin")} />
+            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+            REFRESH STATUS
           </button>
         }
       />
 
-      <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-8">
         {years.map((year) => {
           const yearKey = `year-${year}`;
           const isYearProcessing = processing[yearKey];
           const yearIngestedCount = ingestedMonths.filter(m => m.year === year).length;
           
           return (
-            <Card key={year} className="group overflow-visible border-slate-800 hover:border-slate-700 transition-all duration-300" noPadding>
-              {/* Year Header */}
-              <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/50 rounded-t-2xl">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center font-black text-white border border-slate-700 shadow-inner group-hover:border-sky-500/50 transition-colors">
-                    {year}
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-bold text-white leading-none">{year} Dataset</h2>
-                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
-                      {yearIngestedCount} / 12 MONTHS LOADED
-                    </p>
-                  </div>
+            <div key={year} className="space-y-4">
+              <div className="flex items-center justify-between px-2">
+                <div className="flex items-baseline gap-3">
+                  <h2 className="text-xl font-black text-white tracking-tight">{year} FISCAL YEAR</h2>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">
+                    {yearIngestedCount} / 12 Months Populated
+                  </span>
                 </div>
-
-                <div className="flex items-center gap-2">
+                
+                <div className="flex items-center gap-3">
                   <button 
                     onClick={() => handleBulkAction('ingest', year)}
                     disabled={isYearProcessing || yearIngestedCount === 12}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg border border-sky-500/20 transition-all disabled:opacity-50 disabled:pointer-events-none"
+                    className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-sky-400 hover:text-white transition-colors disabled:opacity-30"
                   >
                     {isYearProcessing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CloudDownload className="w-3 h-3" />}
-                    Download All
+                    Sync Year
                   </button>
+                  <div className="w-px h-4 bg-slate-800" />
                   <button 
                     onClick={() => handleBulkAction('delete', year)}
                     disabled={isYearProcessing || yearIngestedCount === 0}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg border border-rose-500/20 transition-all disabled:opacity-50 disabled:pointer-events-none"
+                    className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-rose-500 transition-colors disabled:opacity-30"
                   >
                     <Trash className="w-3 h-3" />
-                    Clear Year
+                    Purge
                   </button>
                 </div>
               </div>
 
-              {/* Month Grid */}
-              <div className="p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
                 {MONTH_NAMES.map((name, idx) => {
                   const monthNum = idx + 1;
                   const ingested = isIngested(year, monthNum);
@@ -191,47 +182,47 @@ export const DataManagement: React.FC = () => {
                     <div 
                       key={monthKey}
                       className={cn(
-                        "relative group/month p-3 rounded-xl border transition-all duration-300 flex flex-col gap-2",
+                        "group/month p-4 rounded-xl border flex flex-col justify-between h-24 transition-all duration-200",
                         ingested 
-                          ? "bg-sky-500/5 border-sky-500/30 hover:border-sky-500 shadow-lg shadow-sky-500/5" 
+                          ? "bg-sky-500/5 border-sky-500/20 hover:border-sky-500/50" 
                           : future 
-                          ? "bg-slate-900/50 border-slate-800 opacity-40 grayscale pointer-events-none" 
-                          : "bg-slate-800/30 border-slate-700 hover:border-slate-500"
+                          ? "bg-slate-900/20 border-slate-800/50 opacity-30 grayscale cursor-not-allowed" 
+                          : "bg-slate-800/20 border-slate-800 hover:border-slate-600"
                       )}
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-start justify-between">
                         <span className={cn(
-                          "text-[10px] font-black uppercase tracking-tighter",
+                          "text-[10px] font-bold uppercase tracking-widest",
                           ingested ? "text-sky-400" : "text-slate-500"
                         )}>
                           {name}
                         </span>
-                        {ingested ? (
-                          <CheckCircle2 className="w-3 h-3 text-sky-500" />
-                        ) : future ? (
-                          <Calendar className="w-3 h-3 text-slate-700" />
-                        ) : (
-                          <div className="w-1.5 h-1.5 rounded-full bg-slate-700" />
-                        )}
+                        {ingested && <CheckCircle2 className="w-3.5 h-3.5 text-sky-500" />}
+                        {future && <Calendar className="w-3.5 h-3.5 text-slate-700" />}
                       </div>
 
-                      <div className="flex items-center justify-between mt-1">
-                        <span className={cn(
-                          "text-sm font-bold",
-                          ingested ? "text-white" : "text-slate-400"
-                        )}>
-                          {monthNum.toString().padStart(2, '0')}
-                        </span>
-                        
+                      <div className="flex items-end justify-between">
+                        <div className="flex flex-col">
+                          <span className={cn(
+                            "text-xs font-bold leading-none",
+                            ingested ? "text-white" : "text-slate-500"
+                          )}>
+                            {monthNum.toString().padStart(2, '0')}
+                          </span>
+                          <span className="text-[8px] font-bold text-slate-600 mt-1 uppercase tracking-tighter">
+                            {ingested ? 'Populated' : future ? 'Locked' : 'Available'}
+                          </span>
+                        </div>
+
                         {!future && (
                           <button 
                             onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
                             disabled={isProcessing}
                             className={cn(
-                              "p-1.5 rounded-lg transition-all",
+                              "p-2 rounded-lg transition-all",
                               ingested 
-                                ? "text-slate-500 hover:text-rose-400 hover:bg-rose-500/10" 
-                                : "text-slate-400 hover:text-sky-400 hover:bg-sky-500/10"
+                                ? "bg-slate-800/50 text-slate-400 hover:text-rose-400" 
+                                : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white"
                             )}
                           >
                             {isProcessing ? (
@@ -244,53 +235,14 @@ export const DataManagement: React.FC = () => {
                           </button>
                         )}
                       </div>
-
-                      {/* Tooltip-like status */}
-                      <div className="absolute -top-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[8px] font-black uppercase tracking-widest opacity-0 group-hover/month:opacity-100 transition-opacity pointer-events-none z-20">
-                        {ingested ? 'Populated' : future ? 'Unavailable' : 'Available'}
-                      </div>
                     </div>
                   );
                 })}
               </div>
-            </Card>
+            </div>
           );
         })}
-      </div>
-
-      {/* Footer Info */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex items-start gap-4">
-        <div className="p-3 bg-sky-500/10 rounded-xl">
-          <Info className="w-6 h-6 text-sky-500" />
-        </div>
-        <div className="space-y-1">
-          <h3 className="text-sm font-bold text-white">System Information</h3>
-          <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
-            The data management engine discovers monthly zip files directly from CMS.gov. Populated months are stored in an optimized Parquet columnar format, partitioned by year and state for high-performance sub-second querying across the entire application.
-          </p>
-        </div>
       </div>
     </div>
   );
 };
-
-interface InfoProps {
-  className?: string;
-}
-
-const Info: React.FC<InfoProps> = ({ className }) => (
-  <svg 
-    xmlns="http://www.w3.org/2000/svg" 
-    viewBox="0 0 24 24" 
-    fill="none" 
-    stroke="currentColor" 
-    strokeWidth="2" 
-    strokeLinecap="round" 
-    strokeLinejoin="round" 
-    className={className}
-  >
-    <circle cx="12" cy="12" r="10" />
-    <path d="M12 16v-4" />
-    <path d="M12 8h.01" />
-  </svg>
-);
