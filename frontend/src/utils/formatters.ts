@@ -18,3 +18,10 @@ export const formatMonthYear = (monthStr: string): string => {
   const date = new Date(parseInt(year), parseInt(month) - 1);
   return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 };
+
+export const formatMonthShort = (monthStr: string): string => {
+  // input: YYYY-MM → "Feb 25"
+  const [year, month] = monthStr.split('-');
+  const date = new Date(parseInt(year), parseInt(month) - 1);
+  return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+};

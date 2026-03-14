@@ -348,29 +348,32 @@ impl QueryEngine {
         }
     }
 
-    pub fn get_top_movers(&self, state: Option<String>, month_a: YearMonth, month_b: YearMonth, limit: usize) -> Result<Vec<(String, String, String, i32)>> {
+    pub fn get_top_movers(&self, state: Option<String>, month_a: YearMonth, month_b: YearMonth, limit: usize) -> Result<Vec<(String, String, String, i32, u32)>> {
         let yyyymm_a = month_a.to_yyyymm();
         let yyyymm_b = month_b.to_yyyymm();
         let mut plan_changes: HashMap<u32, i32> = HashMap::new();
-        if let (Some(series_cache), _, Some(plan_lookup)) = 
+        let mut plan_prior: HashMap<u32, u32> = HashMap::new();
+        if let (Some(series_cache), _, Some(plan_lookup)) =
            (&self.series_cache, &self.county_lookup, &self.plan_lookup) {
             let target_county_keys = state.as_ref().and_then(|s| self.state_to_county_keys.get(s));
             for series in series_cache.values() {
                 if let Some(keys) = target_county_keys {
                     if !keys.contains(&series.county_key) { continue; }
                 }
-                let val_a = series.get_enrollment(yyyymm_a).unwrap_or(0) as i32;
-                let val_b = series.get_enrollment(yyyymm_b).unwrap_or(0) as i32;
-                *plan_changes.entry(series.plan_key).or_insert(0) += val_b - val_a;
+                let val_a = series.get_enrollment(yyyymm_a).unwrap_or(0);
+                let val_b = series.get_enrollment(yyyymm_b).unwrap_or(0);
+                *plan_changes.entry(series.plan_key).or_insert(0) += val_b as i32 - val_a as i32;
+                *plan_prior.entry(series.plan_key).or_insert(0) += val_a;
             }
             let mut movers = Vec::new();
             for (plan_key, change) in plan_changes {
                 if change == 0 { continue; }
                 if let Some(plan) = plan_lookup.get(&plan_key) {
-                    movers.push((plan.contract_id.clone(), plan.plan_id.clone(), plan.plan_name.clone(), change));
+                    let prior = *plan_prior.get(&plan_key).unwrap_or(&0);
+                    movers.push((plan.contract_id.clone(), plan.plan_id.clone(), plan.plan_name.clone(), change, prior));
                 }
             }
-            movers.sort_by_key(|(_, _, _, c)| std::cmp::Reverse(c.abs()));
+            movers.sort_by_key(|(_, _, _, c, _)| std::cmp::Reverse(c.abs()));
             return Ok(movers.into_iter().take(limit).collect());
         }
         Err(anyhow::anyhow!("Binary cache required."))

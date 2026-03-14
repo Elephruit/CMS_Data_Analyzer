@@ -11,7 +11,7 @@ import {
   Area
 } from 'recharts';
 import { ArrowUpRight, ArrowDownRight, LayoutDashboard, Building2, Users, MapPin } from 'lucide-react';
-import { formatEnrollment, formatFullEnrollment, formatMonthYear } from '../utils/formatters';
+import { formatEnrollment, formatFullEnrollment, formatMonthYear, formatMonthShort } from '../utils/formatters';
 
 interface DashboardSummary {
   totalEnrollment: number;
@@ -30,6 +30,7 @@ interface Mover {
   plan_id: string;
   plan_name: string;
   change: number;
+  prior: number;
 }
 
 export const Dashboard: React.FC = () => {
@@ -38,6 +39,12 @@ export const Dashboard: React.FC = () => {
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [movers, setMovers] = useState<Mover[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Prior December = December of the year before the analysis month's year
+  const priorDecember = (() => {
+    const year = parseInt(filters.analysisMonth.split('-')[0]);
+    return `${year - 1}-12`;
+  })();
 
   useEffect(() => {
     const fetchData = async () => {
@@ -59,8 +66,8 @@ export const Dashboard: React.FC = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ...filters,
-              from: '2025-01',
-              to: '2025-02',
+              from: priorDecember,
+              to: filters.analysisMonth,
               limit: 5
             }),
           })
@@ -75,11 +82,12 @@ export const Dashboard: React.FC = () => {
           month: m.toString().replace(/(\d{4})(\d{2})/, '$1-$2'),
           enrollment: val
         })));
-        setMovers(moversData.map(([cid, pid, name, change]: any) => ({
+        setMovers(moversData.map(([cid, pid, name, change, prior]: any) => ({
           contract_id: cid,
           plan_id: pid,
           plan_name: name,
-          change
+          change,
+          prior: prior ?? 0,
         })));
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
@@ -89,7 +97,7 @@ export const Dashboard: React.FC = () => {
     };
 
     fetchData();
-  }, [filters]);
+  }, [filters, priorDecember]);
 
   return (
     <div className="space-y-8 max-w-[1600px] mx-auto pb-12">
@@ -143,12 +151,13 @@ export const Dashboard: React.FC = () => {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis 
-                  dataKey="month" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{fill: '#64748b', fontSize: 10}} 
+                <XAxis
+                  dataKey="month"
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{fill: '#64748b', fontSize: 10}}
                   dy={10}
+                  tickFormatter={formatMonthShort}
                 />
                 <YAxis 
                   axisLine={false} 
@@ -177,7 +186,10 @@ export const Dashboard: React.FC = () => {
         </Card>
 
         <Card className="flex flex-col h-full min-h-[450px]">
-          <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest mb-8">Top Growth Plans</h2>
+          <div className="flex items-center justify-between mb-8">
+            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Top Growth Plans</h2>
+            <div className="text-[10px] text-slate-500 font-mono">vs {formatMonthShort(priorDecember)}</div>
+          </div>
           <div className="flex-1 space-y-6">
             {movers.length === 0 ? (
               <div className="h-full flex items-center justify-center text-slate-600 text-sm italic">No movers detected in range.</div>
@@ -185,7 +197,12 @@ export const Dashboard: React.FC = () => {
               movers.map((mover, i) => (
                 <div key={i} className="flex items-center justify-between group cursor-pointer">
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold text-white truncate group-hover:text-sky-400 transition-colors">{mover.plan_name}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs font-bold text-white truncate group-hover:text-sky-400 transition-colors">{mover.plan_name}</div>
+                      {mover.prior === 0 && (
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-400 tracking-wide">NEW</span>
+                      )}
+                    </div>
                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">{mover.contract_id}|{mover.plan_id}</div>
                   </div>
                   <div className="flex items-center gap-2 ml-4">
@@ -202,7 +219,6 @@ export const Dashboard: React.FC = () => {
               ))
             )}
           </div>
-
         </Card>
       </div>
     </div>

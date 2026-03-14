@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("Top {} movers from {} to {} {}:", limit, from, to, state.clone().unwrap_or_else(|| "Nationwide".to_string()));
                     println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Change");
                     println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");
-                    for (cid, pid, name, change) in &movers {
+                    for (cid, pid, name, change, _prior) in &movers {
                         println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, change);
                     }
                     results_json = serde_json::json!({
