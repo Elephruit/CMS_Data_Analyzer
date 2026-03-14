@@ -100,20 +100,48 @@ async fn main() -> anyhow::Result<()> {
             log::info!("Cached {} counties", county_map.len());
 
             // 3. Series Cache
+            // Series are partitioned by year, so the same (plan_key, county_key) may appear
+            // in multiple year partitions (e.g. year=2024 has Dec data, year=2025 has Jan/Feb).
+            // We must MERGE them rather than overwrite, or earlier months get dropped.
             let facts_dir = store_dir.join("facts");
-            let mut all_series = std::collections::HashMap::new();
+            let mut all_series: std::collections::HashMap<(u32, u32), model::PlanCountySeries> = std::collections::HashMap::new();
             if facts_dir.exists() {
-                for year_entry in std::fs::read_dir(facts_dir)? {
-                    let year_path = year_entry?.path();
-                    if year_path.is_dir() {
-                        for state_entry in std::fs::read_dir(year_path)? {
-                            let state_path = state_entry?.path();
-                            if state_path.is_dir() {
-                                let series_path = state_path.join("plan_county_series.parquet");
-                                let series_list = storage::parquet_store::load_series_partition(&series_path)?;
-                                for s in series_list {
-                                    all_series.insert((s.plan_key, s.county_key), s);
+                let mut year_paths: Vec<_> = std::fs::read_dir(&facts_dir)?
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.is_dir())
+                    .collect();
+                year_paths.sort();
+                for year_path in year_paths {
+                    let mut state_paths: Vec<_> = std::fs::read_dir(&year_path)?
+                        .filter_map(|e| e.ok().map(|e| e.path()))
+                        .filter(|p| p.is_dir())
+                        .collect();
+                    state_paths.sort();
+                    for state_path in state_paths {
+                        let series_path = state_path.join("plan_county_series.parquet");
+                        let series_list = storage::parquet_store::load_series_partition(&series_path)?;
+                        for new_s in series_list {
+                            let key = (new_s.plan_key, new_s.county_key);
+                            if let Some(existing) = all_series.get_mut(&key) {
+                                // Merge: decode each month from new_s and add into existing
+                                let bitmap = new_s.presence_bitmap;
+                                let start_year = (new_s.start_month_key / 100) as i32;
+                                let start_month = (new_s.start_month_key % 100) as i32;
+                                let mut pos = 0usize;
+                                for i in 0..64u32 {
+                                    if (bitmap >> i) & 1 != 0 {
+                                        let curr = start_month - 1 + i as i32;
+                                        let year = start_year + curr / 12;
+                                        let month = curr % 12 + 1;
+                                        let yyyymm = (year as u32) * 100 + month as u32;
+                                        if let Some(&enrollment) = new_s.enrollments.get(pos) {
+                                            existing.add_month(yyyymm, enrollment);
+                                        }
+                                        pos += 1;
+                                    }
                                 }
+                            } else {
+                                all_series.insert(key, new_s);
                             }
                         }
                     }
