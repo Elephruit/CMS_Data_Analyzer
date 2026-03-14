@@ -1,23 +1,56 @@
-import React, { useEffect, useState } from 'react';
-import { Database, Plus, Trash2, RefreshCw, CheckCircle2 } from 'lucide-react';
+import React, { useEffect, useState, useMemo } from 'react';
+import { 
+  Database, 
+  Download, 
+  Trash2, 
+  RefreshCw, 
+  CheckCircle2, 
+  AlertCircle, 
+  Calendar,
+  ChevronDown,
+  CloudDownload,
+  Trash
+} from 'lucide-react';
+import { Card, PageHeader } from '../components/ui/Primitives';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
 
 interface IngestedMonth {
   year: number;
   month: number;
 }
 
+const MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
 export const DataManagement: React.FC = () => {
-  const [months, setMonths] = useState<IngestedMonth[]>([]);
+  const [ingestedMonths, setIngestedMonths] = useState<IngestedMonth[]>([]);
   const [loading, setLoading] = useState(true);
-  const [ingesting, setIngesting] = useState(false);
-  const [newMonth, setNewMonth] = useState('2025-03');
+  const [processing, setProcessing] = useState<Record<string, boolean>>({});
+  
+  const currentYear = new Date().getFullYear();
+  const currentMonth = new Date().getMonth() + 1;
+
+  const years = useMemo(() => {
+    const y = [];
+    for (let i = currentYear; i >= 2016; i--) {
+      y.push(i);
+    }
+    return y;
+  }, [currentYear]);
 
   const fetchMonths = async () => {
     setLoading(true);
     try {
       const response = await fetch('http://127.0.0.1:3000/api/data/months');
       const data = await response.json();
-      setMonths(data);
+      setIngestedMonths(data);
     } catch (error) {
       console.error('Failed to fetch months:', error);
     } finally {
@@ -29,128 +62,235 @@ export const DataManagement: React.FC = () => {
     fetchMonths();
   }, []);
 
-  const handleIngest = async () => {
-    setIngesting(true);
+  const isIngested = (year: number, month: number) => {
+    return ingestedMonths.some(m => m.year === year && m.month === month);
+  };
+
+  const isFuture = (year: number, month: number) => {
+    if (year > currentYear) return true;
+    if (year === currentYear && month > currentMonth) return true;
+    return false;
+  };
+
+  const handleAction = async (action: 'ingest' | 'delete', year: number, month: number) => {
+    const monthKey = `${year}-${month.toString().padStart(2, '0')}`;
+    setProcessing(prev => ({ ...prev, [monthKey]: true }));
+    
     try {
-      const response = await fetch('http://127.0.0.1:3000/api/data/ingest', {
+      const endpoint = action === 'ingest' ? 'ingest' : 'delete-month';
+      const response = await fetch(`http://127.0.0.1:3000/api/data/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ month: newMonth, force: false }),
+        body: JSON.stringify({ month: monthKey }),
       });
+      
       if (response.ok) {
         await fetchMonths();
-        alert('Ingestion complete!');
-      } else {
-        const err = await response.text();
-        alert('Ingestion failed: ' + err);
       }
     } catch (error) {
-      alert('Error during ingestion');
+      console.error(`Action ${action} failed for ${monthKey}:`, error);
     } finally {
-      setIngesting(false);
+      setProcessing(prev => ({ ...prev, [monthKey]: false }));
+    }
+  };
+
+  const handleBulkAction = async (action: 'ingest' | 'delete', year: number) => {
+    const yearKey = `year-${year}`;
+    setProcessing(prev => ({ ...prev, [yearKey]: true }));
+
+    try {
+      if (action === 'delete') {
+        const response = await fetch(`http://127.0.0.1:3000/api/data/delete-year`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ year }),
+        });
+        if (response.ok) await fetchMonths();
+      } else {
+        // Sequentially ingest missing months for the year
+        for (let m = 1; m <= 12; m++) {
+          if (!isIngested(year, m) && !isFuture(year, m)) {
+            await handleAction('ingest', year, m);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Bulk ${action} failed for ${year}:`, error);
+    } finally {
+      setProcessing(prev => ({ ...prev, [yearKey]: false }));
     }
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Data Management</h1>
-          <p className="text-slate-400 mt-1 text-sm">Manage CMS enrollment periods and system integrity.</p>
-        </div>
-        <div className="flex gap-3">
+    <div className="max-w-[1200px] mx-auto space-y-8 pb-20">
+      <PageHeader 
+        title="Data Management" 
+        subtitle="Control your local analytical store. Ingest and manage CMS datasets by period."
+        action={
           <button 
             onClick={fetchMonths}
-            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-all group"
           >
-            <RefreshCw className={`w-5 h-5 text-slate-300 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={cn("w-5 h-5 text-slate-400 group-hover:text-sky-400 transition-colors", loading && "animate-spin")} />
           </button>
-        </div>
-      </div>
+        }
+      />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="p-6 border-b border-slate-800 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Ingested Periods</h2>
-            <span className="px-2 py-0.5 bg-sky-500/10 text-sky-400 text-[10px] font-bold rounded border border-sky-500/20">
-              {months.length} TOTAL
-            </span>
-          </div>
-          <div className="divide-y divide-slate-800">
-            {loading ? (
-              <div className="p-12 text-center text-slate-500 text-sm">Loading dataset...</div>
-            ) : months.length === 0 ? (
-              <div className="p-12 text-center text-slate-500 text-sm">No months ingested yet.</div>
-            ) : (
-              months.map((m) => (
-                <div key={`${m.year}-${m.month}`} className="p-4 flex items-center justify-between group hover:bg-slate-800/50 transition-colors">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center font-bold text-sky-500 border border-slate-700">
-                      {m.month}
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold text-white">
-                        {new Date(m.year, m.month - 1).toLocaleString('default', { month: 'long', year: 'numeric' })}
-                      </div>
-                      <div className="text-[10px] text-slate-500 uppercase font-medium mt-0.5 flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                        Stored in Parquet & Cache
-                      </div>
-                    </div>
+      <div className="space-y-6">
+        {years.map((year) => {
+          const yearKey = `year-${year}`;
+          const isYearProcessing = processing[yearKey];
+          const yearIngestedCount = ingestedMonths.filter(m => m.year === year).length;
+          
+          return (
+            <Card key={year} className="group overflow-visible border-slate-800 hover:border-slate-700 transition-all duration-300" noPadding>
+              {/* Year Header */}
+              <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/50 rounded-t-2xl">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center font-black text-white border border-slate-700 shadow-inner group-hover:border-sky-500/50 transition-colors">
+                    {year}
                   </div>
-                  <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
-                      <RefreshCw className="w-4 h-4" />
-                    </button>
-                    <button className="p-2 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                  <div>
+                    <h2 className="text-lg font-bold text-white leading-none">{year} Dataset</h2>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
+                      {yearIngestedCount} / 12 MONTHS LOADED
+                    </p>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
 
-        <div className="space-y-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Add New Month</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1 mb-1.5 block">Target Month</label>
-                <input 
-                  type="text" 
-                  value={newMonth}
-                  onChange={(e) => setNewMonth(e.target.value)}
-                  placeholder="YYYY-MM"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-sky-500 outline-none transition-colors"
-                />
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => handleBulkAction('ingest', year)}
+                    disabled={isYearProcessing || yearIngestedCount === 12}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg border border-sky-500/20 transition-all disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    {isYearProcessing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CloudDownload className="w-3 h-3" />}
+                    Download All
+                  </button>
+                  <button 
+                    onClick={() => handleBulkAction('delete', year)}
+                    disabled={isYearProcessing || yearIngestedCount === 0}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg border border-rose-500/20 transition-all disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    <Trash className="w-3 h-3" />
+                    Clear Year
+                  </button>
+                </div>
               </div>
-              <button 
-                onClick={handleIngest}
-                disabled={ingesting}
-                className="w-full py-2.5 bg-sky-500 hover:bg-sky-600 disabled:bg-slate-700 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20"
-              >
-                {ingesting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                {ingesting ? 'INGESTING...' : 'TRIGGER INGEST'}
-              </button>
-              <p className="text-[10px] text-slate-500 leading-relaxed italic">
-                * This will discover, download, and normalize CMS data for the selected period.
-              </p>
-            </div>
-          </div>
 
-          <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-6">
-            <div className="flex items-center gap-3 mb-2">
-              <Database className="w-5 h-5 text-emerald-500" />
-              <h3 className="text-sm font-bold text-emerald-400">System Health</h3>
-            </div>
-            <p className="text-xs text-emerald-500/80 leading-relaxed">
-              Analytical store is synchronized. Cross-partition integrity verified for {months.length} months.
-            </p>
-          </div>
+              {/* Month Grid */}
+              <div className="p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                {MONTH_NAMES.map((name, idx) => {
+                  const monthNum = idx + 1;
+                  const ingested = isIngested(year, monthNum);
+                  const future = isFuture(year, monthNum);
+                  const monthKey = `${year}-${monthNum.toString().padStart(2, '0')}`;
+                  const isProcessing = processing[monthKey];
+
+                  return (
+                    <div 
+                      key={monthKey}
+                      className={cn(
+                        "relative group/month p-3 rounded-xl border transition-all duration-300 flex flex-col gap-2",
+                        ingested 
+                          ? "bg-sky-500/5 border-sky-500/30 hover:border-sky-500 shadow-lg shadow-sky-500/5" 
+                          : future 
+                          ? "bg-slate-900/50 border-slate-800 opacity-40 grayscale pointer-events-none" 
+                          : "bg-slate-800/30 border-slate-700 hover:border-slate-500"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className={cn(
+                          "text-[10px] font-black uppercase tracking-tighter",
+                          ingested ? "text-sky-400" : "text-slate-500"
+                        )}>
+                          {name}
+                        </span>
+                        {ingested ? (
+                          <CheckCircle2 className="w-3 h-3 text-sky-500" />
+                        ) : future ? (
+                          <Calendar className="w-3 h-3 text-slate-700" />
+                        ) : (
+                          <div className="w-1.5 h-1.5 rounded-full bg-slate-700" />
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between mt-1">
+                        <span className={cn(
+                          "text-sm font-bold",
+                          ingested ? "text-white" : "text-slate-400"
+                        )}>
+                          {monthNum.toString().padStart(2, '0')}
+                        </span>
+                        
+                        {!future && (
+                          <button 
+                            onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
+                            disabled={isProcessing}
+                            className={cn(
+                              "p-1.5 rounded-lg transition-all",
+                              ingested 
+                                ? "text-slate-500 hover:text-rose-400 hover:bg-rose-500/10" 
+                                : "text-slate-400 hover:text-sky-400 hover:bg-sky-500/10"
+                            )}
+                          >
+                            {isProcessing ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : ingested ? (
+                              <Trash2 className="w-3.5 h-3.5" />
+                            ) : (
+                              <Download className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Tooltip-like status */}
+                      <div className="absolute -top-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[8px] font-black uppercase tracking-widest opacity-0 group-hover/month:opacity-100 transition-opacity pointer-events-none z-20">
+                        {ingested ? 'Populated' : future ? 'Unavailable' : 'Available'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Footer Info */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex items-start gap-4">
+        <div className="p-3 bg-sky-500/10 rounded-xl">
+          <Info className="w-6 h-6 text-sky-500" />
+        </div>
+        <div className="space-y-1">
+          <h3 className="text-sm font-bold text-white">System Information</h3>
+          <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+            The data management engine discovers monthly zip files directly from CMS.gov. Populated months are stored in an optimized Parquet columnar format, partitioned by year and state for high-performance sub-second querying across the entire application.
+          </p>
         </div>
       </div>
     </div>
   );
 };
+
+interface InfoProps {
+  className?: string;
+}
+
+const Info: React.FC<InfoProps> = ({ className }) => (
+  <svg 
+    xmlns="http://www.w3.org/2000/svg" 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round" 
+    className={className}
+  >
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 16v-4" />
+    <path d="M12 8h.01" />
+  </svg>
+);

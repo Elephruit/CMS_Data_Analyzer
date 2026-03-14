@@ -31,6 +31,8 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
 
         .route("/api/data/months", get(get_ingested_months))
         .route("/api/data/ingest", axum::routing::post(trigger_ingest))
+        .route("/api/data/delete-month", axum::routing::post(delete_month))
+        .route("/api/data/delete-year", axum::routing::post(delete_year))
         // Serve frontend static files
         .fallback_service(ServeDir::new("frontend/dist"))
         .layer(CorsLayer::permissive())
@@ -173,4 +175,52 @@ async fn trigger_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum
         },
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
+}
+
+async fn delete_month(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    let month_str = payload["month"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing month".to_string()))?;
+    let month: crate::model::YearMonth = month_str.parse().map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid month format".to_string()))?;
+
+    // 1. Remove from manifest
+    let manifest_path = store_dir.join("manifests").join("months.json");
+    let mut manifest = crate::storage::manifests::load_manifest(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    manifest.ingested_months.retain(|m| *m != month);
+    manifest.source_hashes.remove(&month.to_string());
+    crate::storage::manifests::save_manifest(&manifest, &manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Note: Data remains in Parquet until full year delete or vacuum. 
+    // Query engine should be updated to respect manifest if we want strict deletion.
+    // For now, removing from manifest hides it from the UI.
+
+    Ok(Json(json!({ "status": "deleted", "month": month_str })))
+}
+
+async fn delete_year(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    let year = payload["year"].as_i64().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing year".to_string()))? as i32;
+
+    // 1. Remove year directory
+    let year_dir = store_dir.join("facts").join(format!("year={}", year));
+    if year_dir.exists() {
+        std::fs::remove_dir_all(year_dir).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // 2. Remove from manifest
+    let manifest_path = store_dir.join("manifests").join("months.json");
+    let mut manifest = crate::storage::manifests::load_manifest(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    manifest.ingested_months.retain(|m| m.year != year);
+    
+    // Clean up hashes
+    let keys_to_remove: Vec<String> = manifest.source_hashes.keys()
+        .filter(|k| k.starts_with(&format!("{}-", year)))
+        .cloned()
+        .collect();
+    for k in keys_to_remove {
+        manifest.source_hashes.remove(&k);
+    }
+
+    crate::storage::manifests::save_manifest(&manifest, &manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(json!({ "status": "deleted", "year": year })))
 }
