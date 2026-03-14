@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useFilters } from '../context/FilterContext';
+import { Card, PageHeader, StatCard } from '../components/ui/Primitives';
 import { 
   XAxis, 
   YAxis, 
@@ -9,7 +10,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Minus, LayoutDashboard, Building2, Users, MapPin } from 'lucide-react';
 
 interface DashboardSummary {
   totalEnrollment: number;
@@ -35,7 +36,7 @@ export const Dashboard: React.FC = () => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [movers, setMovers] = useState<Mover[]>([]);
-  const [, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -89,41 +90,47 @@ export const Dashboard: React.FC = () => {
     fetchData();
   }, [filters]);
 
-  const kpis = [
-    { label: 'Total Enrollment', value: summary ? (summary.totalEnrollment / 1000000).toFixed(2) + 'M' : '0', change: '+1.2%' },
-    { label: 'Parent Orgs', value: summary ? summary.orgCount.toLocaleString() : '0', change: '0' },
-    { label: 'Total Plans', value: summary ? summary.planCount.toLocaleString() : '0', change: '+36' },
-    { label: 'Counties', value: summary ? summary.countyCount.toLocaleString() : '0', change: '0' },
-  ];
-
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight text-white">Dashboard</h1>
-        <div className="text-sm text-slate-400">Analysis period: Jan 2025 - Feb 2025</div>
-      </div>
+    <div className="space-y-8 max-w-[1600px] mx-auto pb-12">
+      <PageHeader 
+        title="Executive Overview" 
+        subtitle="Market-wide enrollment metrics and top-line trends."
+      />
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {kpis.map((kpi) => (
-          <div key={kpi.label} className="p-6 bg-slate-900 border border-slate-800 rounded-xl relative group">
-            <div className="text-sm font-medium text-slate-400 mb-1">{kpi.label}</div>
-            <div className="flex items-baseline gap-2">
-              <div className="text-2xl font-bold text-white group-hover:text-sky-400 transition-colors">{kpi.value}</div>
-              <div className="text-xs font-medium text-emerald-400">{kpi.change}</div>
-            </div>
-          </div>
-        ))}
+        <StatCard 
+          label="Total Enrollment" 
+          value={summary ? (summary.totalEnrollment / 1000000).toFixed(2) + 'M' : '0'} 
+          change="+1.2% MoM"
+          icon={LayoutDashboard}
+          loading={loading}
+        />
+        <StatCard 
+          label="Parent Organizations" 
+          value={summary ? summary.orgCount.toLocaleString() : '0'} 
+          icon={Building2}
+          loading={loading}
+        />
+        <StatCard 
+          label="Total Plans" 
+          value={summary ? summary.planCount.toLocaleString() : '0'} 
+          change="+36 New"
+          icon={Users}
+          loading={loading}
+        />
+        <StatCard 
+          label="Geographies" 
+          value={summary ? summary.countyCount.toLocaleString() : '0'} 
+          icon={MapPin}
+          loading={loading}
+        />
       </div>
       
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 p-6 bg-slate-900 border border-slate-800 rounded-xl flex flex-col min-h-[400px]">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Enrollment Trend</h2>
-            <div className="flex gap-2">
-              <div className="flex items-center gap-1.5 px-2 py-1 bg-sky-500/10 rounded border border-sky-500/20 text-[10px] font-bold text-sky-400">
-                TOTAL ENROLLMENT
-              </div>
-            </div>
+        <Card className="lg:col-span-2 flex flex-col min-h-[450px]">
+          <div className="flex items-center justify-between mb-8">
+            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest text-center">Market Enrollment Trend</h2>
+            <div className="text-[10px] font-mono text-sky-500 font-bold px-2 py-1 bg-sky-500/10 rounded">LIVE DATA</div>
           </div>
           <div className="flex-1 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -149,7 +156,7 @@ export const Dashboard: React.FC = () => {
                   tickFormatter={(val) => (val / 1000000).toFixed(1) + 'M'}
                 />
                 <Tooltip 
-                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px' }}
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
                   labelStyle={{ color: '#94a3b8', fontSize: '10px', marginBottom: '4px' }}
                 />
@@ -157,47 +164,45 @@ export const Dashboard: React.FC = () => {
                   type="monotone" 
                   dataKey="enrollment" 
                   stroke="#0ea5e9" 
-                  strokeWidth={2}
+                  strokeWidth={3}
                   fillOpacity={1} 
                   fill="url(#colorEnroll)" 
                 />
               </AreaChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </Card>
 
-        <div className="p-6 bg-slate-900 border border-slate-800 rounded-xl flex flex-col min-h-[400px]">
-          <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-6">Top Growth Plans (Jan-Feb)</h2>
-          <div className="flex-1 space-y-4">
+        <Card className="flex flex-col h-full min-h-[450px]">
+          <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest mb-8">Top Growth Plans</h2>
+          <div className="flex-1 space-y-6">
             {movers.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-slate-600 text-sm">No movers found</div>
+              <div className="h-full flex items-center justify-center text-slate-600 text-sm italic">No movers detected in range.</div>
             ) : (
               movers.map((mover, i) => (
-                <div key={i} className="flex items-center justify-between group">
+                <div key={i} className="flex items-center justify-between group cursor-pointer">
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-bold text-white truncate group-hover:text-sky-400 transition-colors">{mover.plan_name}</div>
-                    <div className="text-[10px] text-slate-500">{mover.contract_id}|{mover.plan_id}</div>
+                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{mover.contract_id}|{mover.plan_id}</div>
                   </div>
-                  <div className="flex items-center gap-1.5 ml-4">
+                  <div className="flex items-center gap-2 ml-4">
                     <span className={`text-xs font-mono font-bold ${mover.change >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {mover.change >= 0 ? '+' : ''}{mover.change.toLocaleString()}
                     </span>
                     {mover.change > 0 ? (
                       <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
-                    ) : mover.change < 0 ? (
-                      <ArrowDownRight className="w-3.5 h-3.5 text-rose-500" />
                     ) : (
-                      <Minus className="w-3.5 h-3.5 text-slate-500" />
+                      <ArrowDownRight className="w-3.5 h-3.5 text-rose-500" />
                     )}
                   </div>
                 </div>
               ))
             )}
           </div>
-          <button className="mt-6 w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-lg transition-colors border border-slate-700">
-            VIEW ALL MOVERS
+          <button className="mt-8 w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-black uppercase tracking-widest rounded-xl border border-slate-700 transition-all shadow-lg">
+            View All Insights
           </button>
-        </div>
+        </Card>
       </div>
     </div>
   );
