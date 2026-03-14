@@ -19,6 +19,8 @@ pub async fn start_server(port: u16, _store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/query/global-trend", axum::routing::post(get_global_trend))
         .route("/api/query/top-movers", axum::routing::post(get_top_movers))
         .route("/api/query/explorer", axum::routing::post(get_explorer_data))
+        .route("/api/query/organization-analysis", axum::routing::post(get_org_analysis))
+
         .route("/api/data/months", get(get_ingested_months))
         .route("/api/data/ingest", axum::routing::post(trigger_ingest))
         // Serve frontend static files
@@ -93,6 +95,16 @@ async fn get_explorer_data(Json(payload): Json<Value>) -> Result<Json<Value>, (a
     let engine = crate::query::read_api::QueryEngine::new(store_dir);
     
     match engine.get_explorer_data(&payload) {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn get_org_analysis(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    let engine = crate::query::read_api::QueryEngine::new(store_dir);
+    
+    match engine.get_org_analysis(&payload) {
         Ok(data) => Ok(Json(data)),
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }

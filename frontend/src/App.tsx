@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
 import { EnrollmentExplorer } from './pages/EnrollmentExplorer';
+import { OrganizationAnalysis } from './pages/OrganizationAnalysis';
 import { DataManagement } from './pages/DataManagement';
 import { FilterProvider } from './context/FilterContext';
 
@@ -20,7 +21,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/explorer" element={<EnrollmentExplorer />} />
-            <Route path="/organizations" element={<Placeholder title="Parent Organizations" />} />
+            <Route path="/organizations" element={<OrganizationAnalysis />} />
             <Route path="/plans" element={<Placeholder title="Plans" />} />
             <Route path="/geography" element={<Placeholder title="Geography" />} />
             <Route path="/growth" element={<Placeholder title="Growth & AEP" />} />

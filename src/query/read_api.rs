@@ -527,4 +527,89 @@ impl QueryEngine {
             "rows": rows
         }))
     }
+
+    pub fn get_org_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let sel_states: Vec<String> = filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+
+        let mut org_data: HashMap<String, (u64, HashMap<u32, u64>)> = HashMap::new(); // Org -> (TotalLatest, MonthlyTrend)
+        let mut total_market_enrollment: u64 = 0;
+        let mut latest_yyyymm = 0;
+
+        if self.cache_enabled {
+            let plan_lookup = self.plan_lookup.as_ref().unwrap();
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            // Find latest month
+            for series in series_cache.values() {
+                let start_year = (series.start_month_key / 100) as i32;
+                let start_month = (series.start_month_key % 100) as i32;
+                for i in 0..64 {
+                    if (series.presence_bitmap >> i) & 1 != 0 {
+                        let m = (start_year as u32 * 100) + (start_month as u32 + i as u32 - 1);
+                        if m > latest_yyyymm { latest_yyyymm = m; }
+                    }
+                }
+            }
+
+            for series in series_cache.values() {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                if let Some(c) = county {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    if state_match {
+                        if let Some(p) = plan_lookup.get(&series.plan_key) {
+                            let org = p.plan_name.split_whitespace().next().unwrap_or("Other").to_string();
+                            let latest_val = series.get_enrollment(latest_yyyymm).unwrap_or(0) as u64;
+                            
+                            let entry = org_data.entry(org).or_insert((0, HashMap::new()));
+                            entry.0 += latest_val;
+                            total_market_enrollment += latest_val;
+
+                            // Populate trend
+                            let mut bitmap = series.presence_bitmap;
+                            let mut pos = 0;
+                            let start_year = (series.start_month_key / 100) as i32;
+                            let start_month = (series.start_month_key % 100) as i32;
+                            for i in 0..64 {
+                                if (bitmap >> i) & 1 != 0 {
+                                    let curr_month_total = start_month - 1 + i as i32;
+                                    let year = start_year + curr_month_total / 12;
+                                    let month = (curr_month_total % 12) + 1;
+                                    let yyyymm = (year as u32) * 100 + (month as u32);
+                                    if let Some(&enrollment) = series.enrollments.get(pos) {
+                                        *entry.1.entry(yyyymm).or_insert(0) += enrollment as u64;
+                                    }
+                                    pos += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut orgs_list = Vec::new();
+        for (name, (latest, trend_map)) in org_data {
+            let share = if total_market_enrollment > 0 { (latest as f64 / total_market_enrollment as f64) * 100.0 } else { 0.0 };
+            let mut trend: Vec<_> = trend_map.into_iter().collect();
+            trend.sort_by_key(|(m, _)| *m);
+
+            orgs_list.push(serde_json::json!({
+                "name": name,
+                "enrollment": latest,
+                "marketShare": share,
+                "trend": trend.into_iter().map(|(m, v)| serde_json::json!({ "month": m, "value": v })).collect::<Vec<_>>()
+            }));
+        }
+
+        orgs_list.sort_by_key(|o| std::cmp::Reverse(o["enrollment"].as_u64().unwrap_or(0)));
+
+        Ok(serde_json::json!({
+            "totalMarketEnrollment": total_market_enrollment,
+            "latestMonth": latest_yyyymm,
+            "organizations": orgs_list
+        }))
+    }
 }
