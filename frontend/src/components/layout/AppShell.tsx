@@ -1,6 +1,7 @@
 import React from 'react';
 import { NavRail } from './NavRail';
 import { Header } from './Header';
+import { FilterBar } from '../filters/FilterBar';
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -12,6 +13,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       <NavRail />
       <div className="flex flex-col flex-1 min-w-0">
         <Header />
+        <FilterBar />
         <main className="flex-1 overflow-y-auto p-6">
           {children}
         </main>

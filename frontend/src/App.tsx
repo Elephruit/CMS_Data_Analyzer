@@ -1,6 +1,8 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
+import { DataManagement } from './pages/DataManagement';
+import { FilterProvider } from './context/FilterContext';
 
 // Placeholder components for other pages
 const Placeholder = ({ title }: { title: string }) => (
@@ -11,20 +13,22 @@ const Placeholder = ({ title }: { title: string }) => (
 
 function App() {
   return (
-    <Router>
-      <AppShell>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/explorer" element={<Placeholder title="Enrollment Explorer" />} />
-          <Route path="/organizations" element={<Placeholder title="Parent Organizations" />} />
-          <Route path="/plans" element={<Placeholder title="Plans" />} />
-          <Route path="/geography" element={<Placeholder title="Geography" />} />
-          <Route path="/growth" element={<Placeholder title="Growth & AEP" />} />
-          <Route path="/data" element={<Placeholder title="Data Management" />} />
-          <Route path="/exports" element={<Placeholder title="Exports" />} />
-        </Routes>
-      </AppShell>
-    </Router>
+    <FilterProvider>
+      <Router>
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/explorer" element={<Placeholder title="Enrollment Explorer" />} />
+            <Route path="/organizations" element={<Placeholder title="Parent Organizations" />} />
+            <Route path="/plans" element={<Placeholder title="Plans" />} />
+            <Route path="/geography" element={<Placeholder title="Geography" />} />
+            <Route path="/growth" element={<Placeholder title="Growth & AEP" />} />
+            <Route path="/data" element={<DataManagement />} />
+            <Route path="/exports" element={<Placeholder title="Exports" />} />
+          </Routes>
+        </AppShell>
+      </Router>
+    </FilterProvider>
   );
 }
 

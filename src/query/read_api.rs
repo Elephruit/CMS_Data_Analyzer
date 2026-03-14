@@ -131,8 +131,6 @@ impl QueryEngine {
     pub fn get_county_key(&self, state_code: &str, county_name: &str) -> Result<Option<u32>> {
         if self.cache_enabled {
             if let Some(lookup) = &self.county_lookup {
-                let key = format!("{}|{}", state_code.to_uppercase(), county_name.to_lowercase()); // This naming convention should match during cache build
-                // Wait, my cache build uses "{}|{}". Let's just iterate to be safe for MVP.
                 for county in lookup.values() {
                     if county.state_code.to_lowercase() == state_code.to_lowercase() 
                        && county.county_name.to_lowercase() == county_name.to_lowercase() {
@@ -220,6 +218,60 @@ impl QueryEngine {
         Ok(result)
     }
 
+    pub fn get_filter_options(&self, current_filters: &serde_json::Value) -> Result<serde_json::Value> {
+        // Extract current selections
+        let sel_states: Vec<String> = current_filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        
+        let mut states: HashMap<String, u32> = HashMap::new();
+        let mut counties: HashMap<String, u32> = HashMap::new();
+        let mut parent_orgs: HashMap<String, u32> = HashMap::new();
+        let mut contracts: HashMap<String, u32> = HashMap::new();
+        let mut plans: HashMap<String, u32> = HashMap::new();
+
+        if self.cache_enabled {
+            let plan_lookup = self.plan_lookup.as_ref().unwrap();
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            for series in series_cache.values() {
+                let plan = plan_lookup.get(&series.plan_key);
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+
+                if let (Some(p), Some(c)) = (plan, county) {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    
+                    *states.entry(c.state_code.clone()).or_insert(0) += 1;
+
+                    if state_match {
+                        *counties.entry(c.county_name.clone()).or_insert(0) += 1;
+                        let org = p.plan_name.split_whitespace().next().unwrap_or("Other").to_string();
+                        *parent_orgs.entry(org).or_insert(0) += 1;
+                        *contracts.entry(p.contract_id.clone()).or_insert(0) += 1;
+                        *plans.entry(format!("{} - {}", p.plan_id, p.plan_name)).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let format_options = |map: HashMap<String, u32>| {
+            let mut opts: Vec<serde_json::Value> = map.into_iter()
+                .map(|(k, v)| serde_json::json!({ "label": k, "value": k, "count": v }))
+                .collect();
+            opts.sort_by_key(|o| o["label"].as_str().unwrap_or("").to_string());
+            opts
+        };
+
+        Ok(serde_json::json!({
+            "states": format_options(states),
+            "counties": format_options(counties),
+            "parentOrgs": format_options(parent_orgs),
+            "contracts": format_options(contracts),
+            "plans": format_options(plans),
+        }))
+    }
+
     pub fn get_state_rollup(&self, state_code: &str, start_month: YearMonth, end_month: YearMonth) -> Result<Vec<(u32, u32)>> {
         let mut monthly_totals = HashMap::new();
         let start_yyyymm = start_month.to_yyyymm();
@@ -228,7 +280,6 @@ impl QueryEngine {
         if self.cache_enabled {
             if let Some(series_cache) = &self.series_cache {
                 if let Some(county_lookup) = &self.county_lookup {
-                    // Filter counties by state
                     let target_counties: std::collections::HashSet<u32> = county_lookup.values()
                         .filter(|c| c.state_code.to_lowercase() == state_code.to_lowercase())
                         .map(|c| c.county_key)
@@ -246,7 +297,6 @@ impl QueryEngine {
             }
         }
 
-        // Fallback to Parquet if cache missed
         for year in start_month.year..=end_month.year {
             let year_state_dir = self.store_dir.join("facts").join(format!("year={}", year)).join(format!("state={}", state_code.to_uppercase()));
             if year_state_dir.exists() {
@@ -316,7 +366,6 @@ impl QueryEngine {
             return Err(anyhow::anyhow!("Top movers query requires binary cache for performance in this MVP. Run rebuild-cache first."));
         }
 
-        // Resolve metadata and sort
         let mut movers = Vec::new();
         if let Some(plan_lookup) = &self.plan_lookup {
             for (plan_key, change) in plan_changes {
@@ -329,5 +378,93 @@ impl QueryEngine {
 
         movers.sort_by_key(|(_, _, _, c)| std::cmp::Reverse(c.abs()));
         Ok(movers.into_iter().take(limit).collect())
+    }
+
+    pub fn get_dashboard_summary(&self, current_filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let sel_states: Vec<String> = current_filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        
+        let mut total_enrollment: u64 = 0;
+        let mut unique_plans = std::collections::HashSet::new();
+        let mut unique_counties = std::collections::HashSet::new();
+        let mut unique_orgs = std::collections::HashSet::new();
+
+        if self.cache_enabled {
+            let plan_lookup = self.plan_lookup.as_ref().unwrap();
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            for series in series_cache.values() {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                
+                if let Some(c) = county {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    if state_match {
+                        if let Some(&latest) = series.enrollments.last() {
+                            total_enrollment += latest as u64;
+                        }
+                        unique_plans.insert(series.plan_key);
+                        unique_counties.insert(series.county_key);
+                        
+                        if let Some(p) = plan_lookup.get(&series.plan_key) {
+                            let org = p.plan_name.split_whitespace().next().unwrap_or("Other");
+                            unique_orgs.insert(org.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "totalEnrollment": total_enrollment,
+            "planCount": unique_plans.len(),
+            "countyCount": unique_counties.len(),
+            "orgCount": unique_orgs.len(),
+        }))
+    }
+
+    pub fn get_global_trend(&self, current_filters: &serde_json::Value) -> Result<Vec<(u32, u64)>> {
+        let sel_states: Vec<String> = current_filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        
+        let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
+
+        if self.cache_enabled {
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            for series in series_cache.values() {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                if let Some(c) = county {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    if state_match {
+                        let bitmap = series.presence_bitmap;
+                        let mut pos = 0;
+                        let start_year = (series.start_month_key / 100) as i32;
+                        let start_month = (series.start_month_key % 100) as i32;
+
+                        for i in 0..64 {
+                            if (bitmap >> i) & 1 != 0 {
+                                let curr_month_total = start_month - 1 + i as i32;
+                                let year = start_year + curr_month_total / 12;
+                                let month = (curr_month_total % 12) + 1;
+                                let yyyymm = (year as u32) * 100 + (month as u32);
+                                
+                                if let Some(&enrollment) = series.enrollments.get(pos) {
+                                    *monthly_totals.entry(yyyymm).or_insert(0) += enrollment as u64;
+                                }
+                                pos += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut result: Vec<_> = monthly_totals.into_iter().collect();
+        result.sort_by_key(|(m, _)| *m);
+        Ok(result)
     }
 }
