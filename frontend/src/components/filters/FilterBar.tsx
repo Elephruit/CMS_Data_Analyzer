@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { FilterDropdown } from './FilterDropdown';
+import { BooleanFilter } from './BooleanFilter';
 import { useFilters } from '../../context/FilterContext';
 import { RotateCcw } from 'lucide-react';
 
@@ -15,6 +16,7 @@ interface FilterOptions {
   parentOrgs: Option[];
   contracts: Option[];
   plans: Option[];
+  planTypes: Option[];
 }
 
 export const FilterBar: React.FC = () => {
@@ -25,6 +27,7 @@ export const FilterBar: React.FC = () => {
     parentOrgs: [],
     contracts: [],
     plans: [],
+    planTypes: [],
   });
   const [loading, setLoading] = useState(false);
 
@@ -47,16 +50,10 @@ export const FilterBar: React.FC = () => {
     };
 
     fetchOptions();
-  }, [filters.states, filters.counties, filters.parentOrgs]); // Refetch when filters change
-
-  const planTypeOptions = [
-    { label: 'HMO', value: 'HMO' },
-    { label: 'PPO', value: 'PPO' },
-    { label: 'PFFS', value: 'PFFS' },
-  ];
+  }, [filters]); 
 
   return (
-    <div className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-end gap-4 z-30 relative">
+    <div className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-end gap-4 z-30 relative overflow-visible">
       <FilterDropdown
         label="State"
         options={options.states}
@@ -104,10 +101,23 @@ export const FilterBar: React.FC = () => {
 
       <FilterDropdown
         label="Plan Type"
-        options={planTypeOptions}
-        selectedValues={[]}
-        onChange={() => {}}
+        options={options.planTypes}
+        selectedValues={filters.planTypes}
+        onChange={(vals) => updateFilter('planTypes', vals)}
         placeholder="All Types"
+        loading={loading}
+      />
+
+      <BooleanFilter 
+        label="EGWP"
+        value={filters.eghp}
+        onChange={(val) => updateFilter('eghp', val)}
+      />
+
+      <BooleanFilter 
+        label="SNP"
+        value={filters.snp}
+        onChange={(val) => updateFilter('snp', val)}
       />
 
       <div className="h-9 w-px bg-slate-800 mx-2 mb-1"></div>

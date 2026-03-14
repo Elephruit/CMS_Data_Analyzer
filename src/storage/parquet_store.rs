@@ -21,12 +21,17 @@ pub fn load_plan_dim(path: &Path) -> Result<Vec<PlanDim>> {
     let mut plans = Vec::new();
     for batch in reader {
         let batch = batch?;
+        
         let plan_keys = batch.column(0).as_primitive::<UInt32Type>();
         let contract_ids = batch.column(1).as_string::<i32>();
         let plan_ids = batch.column(2).as_string::<i32>();
         let plan_names = batch.column(3).as_string::<i32>();
-        let valid_froms = batch.column(4).as_primitive::<UInt32Type>();
-        let is_currents = batch.column(5).as_boolean();
+        let parent_orgs = batch.column(4).as_string::<i32>();
+        let plan_types = batch.column(5).as_string::<i32>();
+        let is_egwps = batch.column(6).as_boolean();
+        let is_snps = batch.column(7).as_boolean();
+        let valid_froms = batch.column(8).as_primitive::<UInt32Type>();
+        let is_currents = batch.column(9).as_boolean();
 
         for i in 0..batch.num_rows() {
             plans.push(PlanDim {
@@ -34,6 +39,10 @@ pub fn load_plan_dim(path: &Path) -> Result<Vec<PlanDim>> {
                 contract_id: contract_ids.value(i).to_string(),
                 plan_id: plan_ids.value(i).to_string(),
                 plan_name: plan_names.value(i).to_string(),
+                parent_org: parent_orgs.value(i).to_string(),
+                plan_type: plan_types.value(i).to_string(),
+                is_egwp: is_egwps.value(i),
+                is_snp: is_snps.value(i),
                 valid_from_month: valid_froms.value(i),
                 valid_to_month: None,
                 is_current: is_currents.value(i),
@@ -48,6 +57,10 @@ pub fn save_plan_dim(plans: &[PlanDim], path: &Path) -> Result<()> {
     let contract_ids = StringArray::from(plans.iter().map(|p| p.contract_id.clone()).collect::<Vec<_>>());
     let plan_ids = StringArray::from(plans.iter().map(|p| p.plan_id.clone()).collect::<Vec<_>>());
     let plan_names = StringArray::from(plans.iter().map(|p| p.plan_name.clone()).collect::<Vec<_>>());
+    let parent_orgs = StringArray::from(plans.iter().map(|p| p.parent_org.clone()).collect::<Vec<_>>());
+    let plan_types = StringArray::from(plans.iter().map(|p| p.plan_type.clone()).collect::<Vec<_>>());
+    let is_egwps = BooleanArray::from(plans.iter().map(|p| p.is_egwp).collect::<Vec<_>>());
+    let is_snps = BooleanArray::from(plans.iter().map(|p| p.is_snp).collect::<Vec<_>>());
     let valid_froms = UInt32Array::from(plans.iter().map(|p| p.valid_from_month).collect::<Vec<_>>());
     let is_currents = BooleanArray::from(plans.iter().map(|p| p.is_current).collect::<Vec<_>>());
 
@@ -56,6 +69,10 @@ pub fn save_plan_dim(plans: &[PlanDim], path: &Path) -> Result<()> {
         ("contract_id", Arc::new(contract_ids) as ArrayRef),
         ("plan_id", Arc::new(plan_ids) as ArrayRef),
         ("plan_name", Arc::new(plan_names) as ArrayRef),
+        ("parent_org", Arc::new(parent_orgs) as ArrayRef),
+        ("plan_type", Arc::new(plan_types) as ArrayRef),
+        ("is_egwp", Arc::new(is_egwps) as ArrayRef),
+        ("is_snp", Arc::new(is_snps) as ArrayRef),
         ("valid_from_month", Arc::new(valid_froms) as ArrayRef),
         ("is_current", Arc::new(is_currents) as ArrayRef),
     ])?;
@@ -158,7 +175,6 @@ pub fn save_series_partition(series_list: &[PlanCountySeries], path: &Path) -> R
     let start_months = UInt32Array::from(series_list.iter().map(|s| s.start_month_key).collect::<Vec<_>>());
     let bitmaps = UInt64Array::from(series_list.iter().map(|s| s.presence_bitmap).collect::<Vec<_>>());
 
-    // Create ListArray for enrollments
     let mut values = Vec::new();
     let mut offsets = vec![0i32];
     for s in series_list {

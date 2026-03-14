@@ -7,6 +7,9 @@ export interface FilterState {
   parentOrgs: string[];
   contracts: string[];
   plans: string[];
+  planTypes: string[];
+  eghp: boolean | null;
+  snp: boolean | null;
   search: string;
 }
 
@@ -24,6 +27,9 @@ const defaultFilters: FilterState = {
   parentOrgs: [],
   contracts: [],
   plans: [],
+  planTypes: [],
+  eghp: null,
+  snp: null,
   search: '',
 };
 

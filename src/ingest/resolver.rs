@@ -41,12 +41,17 @@ impl KeyResolver {
 
         if let Some(&current_key) = self.current_plans.get(&natural_key) {
             let plan = self.plans.get_mut(&current_key).expect("Current plan must exist in map");
-            if plan.plan_name == row.plan_name {
+            // Check for material changes
+            if plan.plan_name == row.plan_name && 
+               plan.parent_org == row.parent_org && 
+               plan.plan_type == row.plan_type &&
+               plan.is_egwp == row.is_egwp &&
+               plan.is_snp == row.is_snp {
                 return plan.plan_key;
             }
 
             // Material change detected: version the record
-            log::info!("Plan metadata changed for {}: {} -> {}. Versioning.", natural_key, plan.plan_name, row.plan_name);
+            log::info!("Plan metadata changed for {}. Versioning.", natural_key);
             plan.is_current = false;
             plan.valid_to_month = Some(month_yyyymm);
         }
@@ -60,6 +65,10 @@ impl KeyResolver {
             contract_id: row.contract_id.clone(),
             plan_id: row.plan_id.clone(),
             plan_name: row.plan_name.clone(),
+            parent_org: row.parent_org.clone(),
+            plan_type: row.plan_type.clone(),
+            is_egwp: row.is_egwp,
+            is_snp: row.is_snp,
             valid_from_month: month_yyyymm,
             valid_to_month: None,
             is_current: true,

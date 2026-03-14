@@ -25,6 +25,10 @@ pub struct ContractHeaderMap {
     pub contract_id_idx: usize,
     pub plan_id_idx: usize,
     pub plan_name_idx: usize,
+    pub parent_org_idx: usize,
+    pub plan_type_idx: usize,
+    pub eghp_idx: usize,
+    pub snp_idx: usize,
 }
 
 pub fn map_contract_headers(headers: &StringRecord) -> Result<ContractHeaderMap> {
@@ -46,7 +50,20 @@ pub fn map_contract_headers(headers: &StringRecord) -> Result<ContractHeaderMap>
         contract_id_idx: find(&["contract_id", "contract_number"])?,
         plan_id_idx: find(&["plan_id", "plan_number"])?,
         plan_name_idx: find(&["plan_name", "organization_name", "org_name"])?,
+        parent_org_idx: find(&["parent_organization"])?,
+        plan_type_idx: find(&["plan_type"])?,
+        eghp_idx: find(&["eghp"])?,
+        snp_idx: find(&["snp_plan"])?,
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanMetadata {
+    pub name: String,
+    pub parent_org: String,
+    pub plan_type: String,
+    pub is_egwp: bool,
+    pub is_snp: bool,
 }
 
 pub struct EnrollmentHeaderMap {
@@ -84,7 +101,7 @@ pub fn map_enrollment_headers(headers: &StringRecord) -> Result<EnrollmentHeader
 pub fn normalize_enrollment_byte_row(
     record: &csv::ByteRecord,
     headers: &EnrollmentHeaderMap,
-    plan_names: &HashMap<(String, String), String>,
+    plan_metadata: &HashMap<(String, String), PlanMetadata>,
 ) -> Result<Option<NormalizedRow>> {
     let contract_id = String::from_utf8_lossy(record.get(headers.contract_id_idx).context("Missing contract_id")?).trim().to_string();
     let plan_id = String::from_utf8_lossy(record.get(headers.plan_id_idx).context("Missing plan_id")?).trim().to_string();
@@ -99,14 +116,24 @@ pub fn normalize_enrollment_byte_row(
 
     let enrollment = enrollment_str.replace(",", "").parse::<u32>().map_err(|_| anyhow::anyhow!("Malformed enrollment: {}", enrollment_str))?;
 
-    let plan_name = plan_names.get(&(contract_id.clone(), plan_id.clone()))
+    let meta = plan_metadata.get(&(contract_id.clone(), plan_id.clone()))
         .cloned()
-        .unwrap_or_else(|| "Unknown Plan".to_string());
+        .unwrap_or_else(|| PlanMetadata {
+            name: "Unknown Plan".to_string(),
+            parent_org: "Unknown Organization".to_string(),
+            plan_type: "Unknown".to_string(),
+            is_egwp: false,
+            is_snp: false,
+        });
 
     Ok(Some(NormalizedRow {
         contract_id,
         plan_id,
-        plan_name,
+        plan_name: meta.name,
+        parent_org: meta.parent_org,
+        plan_type: meta.plan_type,
+        is_egwp: meta.is_egwp,
+        is_snp: meta.is_snp,
         state_code,
         county_name,
         enrollment,
