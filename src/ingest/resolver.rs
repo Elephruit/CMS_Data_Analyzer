@@ -1,9 +1,9 @@
-use anyhow::Result;
 use std::collections::HashMap;
 use crate::model::{PlanDim, CountyDim, NormalizedRow, YearMonth};
 
 pub struct KeyResolver {
-    pub plans: HashMap<String, PlanDim>, // Natural key (CID|PID) -> PlanDim
+    pub plans: HashMap<u32, PlanDim>, // Surrogate key -> PlanDim
+    pub current_plans: HashMap<String, u32>, // Natural key (CID|PID) -> Current surrogate key
     pub counties: HashMap<String, CountyDim>, // Natural key (State|County) -> CountyDim
     pub next_plan_key: u32,
     pub next_county_key: u32,
@@ -13,6 +13,7 @@ impl KeyResolver {
     pub fn new() -> Self {
         Self {
             plans: HashMap::new(),
+            current_plans: HashMap::new(),
             counties: HashMap::new(),
             next_plan_key: 1,
             next_county_key: 1,
@@ -23,11 +24,21 @@ impl KeyResolver {
         let max_plan_key = plans.iter().map(|p| p.plan_key).max().unwrap_or(0);
         let max_county_key = counties.iter().map(|c| c.county_key).max().unwrap_or(0);
 
-        let plans_map = plans.into_iter().map(|p| (format!("{}|{}", p.contract_id, p.plan_id), p)).collect();
+        let mut plans_map = HashMap::new();
+        let mut current_plans = HashMap::new();
+        for p in plans {
+            let key = p.plan_key;
+            if p.is_current {
+                current_plans.insert(format!("{}|{}", p.contract_id, p.plan_id), key);
+            }
+            plans_map.insert(key, p);
+        }
+
         let counties_map = counties.into_iter().map(|c| (format!("{}|{}", c.state_code, c.county_name), c)).collect();
 
         Self {
             plans: plans_map,
+            current_plans,
             counties: counties_map,
             next_plan_key: max_plan_key + 1,
             next_county_key: max_county_key + 1,
@@ -38,31 +49,35 @@ impl KeyResolver {
         let natural_key = format!("{}|{}", row.contract_id, row.plan_id);
         let month_yyyymm = month.to_yyyymm();
 
-        if let Some(plan) = self.plans.get_mut(&natural_key) {
-            // Check if metadata changed (plan_name)
-            if plan.plan_name != row.plan_name {
-                log::info!("Plan metadata changed for {}: {} -> {}", natural_key, plan.plan_name, row.plan_name);
-                // In a full implementation, we'd version the dimension record here.
-                // For the MVP, we'll just update the name if it's the current record.
-                plan.plan_name = row.plan_name.clone();
+        if let Some(&current_key) = self.current_plans.get(&natural_key) {
+            let plan = self.plans.get_mut(&current_key).expect("Current plan must exist in map");
+            if plan.plan_name == row.plan_name {
+                return plan.plan_key;
             }
-            plan.plan_key
-        } else {
-            let plan_key = self.next_plan_key;
-            self.next_plan_key += 1;
 
-            let new_plan = PlanDim {
-                plan_key,
-                contract_id: row.contract_id.clone(),
-                plan_id: row.plan_id.clone(),
-                plan_name: row.plan_name.clone(),
-                valid_from_month: month_yyyymm,
-                valid_to_month: None,
-                is_current: true,
-            };
-            self.plans.insert(natural_key, new_plan);
-            plan_key
+            // Material change detected: version the record
+            log::info!("Plan metadata changed for {}: {} -> {}. Versioning.", natural_key, plan.plan_name, row.plan_name);
+            plan.is_current = false;
+            plan.valid_to_month = Some(month_yyyymm);
         }
+
+        // Create new version
+        let plan_key = self.next_plan_key;
+        self.next_plan_key += 1;
+
+        let new_plan = PlanDim {
+            plan_key,
+            contract_id: row.contract_id.clone(),
+            plan_id: row.plan_id.clone(),
+            plan_name: row.plan_name.clone(),
+            valid_from_month: month_yyyymm,
+            valid_to_month: None,
+            is_current: true,
+        };
+        
+        self.plans.insert(plan_key, new_plan);
+        self.current_plans.insert(natural_key, plan_key);
+        plan_key
     }
 
     pub fn resolve_county(&mut self, row: &NormalizedRow) -> u32 {
