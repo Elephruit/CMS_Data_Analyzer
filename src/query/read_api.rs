@@ -404,8 +404,11 @@ impl QueryEngine {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
 
-            let mut plan_changes: HashMap<u32, i32> = HashMap::new();
-            let mut plan_prior: HashMap<u32, u32> = HashMap::new();
+            // Aggregate by natural key (CID|PID) so that versioned plans (same CID|PID,
+            // different name/plan_key due to metadata change) appear as a single entry.
+            // nk -> (net_change, prior_total, display_name)
+            let mut nk_data: HashMap<String, (i32, u32)> = HashMap::new();
+            let mut nk_info: HashMap<String, (String, String, String)> = HashMap::new(); // nk -> (cid, pid, name)
 
             for series in series_cache.values() {
                 let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
@@ -419,18 +422,26 @@ impl QueryEngine {
                     if !sel_counties.is_empty() && !sel_counties.contains(&county.county_name) { continue; }
                 }
 
+                // Prefer the plan name from the version valid at the analysis month (month_b)
+                let info = nk_info.entry(nk.clone()).or_insert_with(||
+                    (plan.contract_id.clone(), plan.plan_id.clone(), plan.plan_name.clone())
+                );
+                if self.is_plan_valid_for_month(plan, yyyymm_b) {
+                    info.2 = plan.plan_name.clone();
+                }
+
                 let val_a = series.get_enrollment(yyyymm_a).unwrap_or(0);
                 let val_b = series.get_enrollment(yyyymm_b).unwrap_or(0);
-                *plan_changes.entry(series.plan_key).or_insert(0) += val_b as i32 - val_a as i32;
-                *plan_prior.entry(series.plan_key).or_insert(0) += val_a;
+                let data = nk_data.entry(nk).or_insert((0, 0));
+                data.0 += val_b as i32 - val_a as i32;
+                data.1 += val_a;
             }
 
             let mut movers = Vec::new();
-            for (plan_key, change) in plan_changes {
+            for (nk, (change, prior)) in nk_data {
                 if change == 0 { continue; }
-                if let Some(plan) = plan_lookup.get(&plan_key) {
-                    let prior = *plan_prior.get(&plan_key).unwrap_or(&0);
-                    movers.push((plan.contract_id.clone(), plan.plan_id.clone(), plan.plan_name.clone(), change, prior));
+                if let Some((cid, pid, name)) = nk_info.get(&nk) {
+                    movers.push((cid.clone(), pid.clone(), name.clone(), change, prior));
                 }
             }
             movers.sort_by_key(|(_, _, _, c, _)| std::cmp::Reverse(c.abs()));
@@ -462,20 +473,22 @@ impl QueryEngine {
                 let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
                 
                 if matching_nks.contains(&nk) {
-                    // Check static geo filters
-                    if let Some(county) = county_lookup.get(&series.county_key) {
-                        if let Some(sel_states) = filters["states"].as_array() {
-                            if !sel_states.is_empty() {
-                                let states: HashSet<String> = sel_states.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                                if !states.contains(&county.state_code) { continue; }
-                            }
-                        }
-                        if let Some(sel_counties) = filters["counties"].as_array() {
-                            if !sel_counties.is_empty() {
-                                let counties: HashSet<String> = sel_counties.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                                if !counties.contains(&county.county_name) { continue; }
-                            }
-                        }
+                    // Guard against older plan versions sharing the same natural key:
+                    // only the version that is actually valid at the analysis month
+                    // should contribute enrollment, preventing double-counting.
+                    if !self.is_plan_valid_for_month(plan, current_yyyymm) { continue; }
+
+                    // Geo filters require a real county
+                    let sel_states: HashSet<String> = filters["states"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                        .unwrap_or_default();
+                    let sel_counties: HashSet<String> = filters["counties"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                        .unwrap_or_default();
+                    if !sel_states.is_empty() || !sel_counties.is_empty() {
+                        let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => continue };
+                        if !sel_states.is_empty() && !sel_states.contains(&county.state_code) { continue; }
+                        if !sel_counties.is_empty() && !sel_counties.contains(&county.county_name) { continue; }
                     }
 
                     if let Some(val) = series.get_enrollment(current_yyyymm) {
