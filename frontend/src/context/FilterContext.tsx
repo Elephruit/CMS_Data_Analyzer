@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, type ReactNode } from 'react';
 
 export interface FilterState {
+  analysisMonth: string; // YYYY-MM
   dateRange: [string, string];
   states: string[];
   counties: string[];
@@ -21,6 +22,7 @@ interface FilterContextType {
 }
 
 const defaultFilters: FilterState = {
+  analysisMonth: '2025-02',
   dateRange: ['2025-01', '2025-02'],
   states: [],
   counties: [],

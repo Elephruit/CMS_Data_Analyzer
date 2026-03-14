@@ -1,8 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { FilterDropdown } from './FilterDropdown';
 import { BooleanFilter } from './BooleanFilter';
 import { useFilters } from '../../context/FilterContext';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, CalendarDays } from 'lucide-react';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
 
 interface Option {
   label: string;
@@ -29,7 +35,15 @@ export const FilterBar: React.FC = () => {
     plans: [],
     planTypes: [],
   });
+  const [availableMonths, setAvailableMonths] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetch('http://127.0.0.1:3000/api/data/months')
+      .then(res => res.json())
+      .then(data => setAvailableMonths(data))
+      .catch(err => console.error(err));
+  }, []);
 
   useEffect(() => {
     const fetchOptions = async () => {
@@ -50,10 +64,37 @@ export const FilterBar: React.FC = () => {
     };
 
     fetchOptions();
-  }, [filters]); 
+  }, [filters.states, filters.counties, filters.parentOrgs, filters.contracts, filters.plans, filters.planTypes, filters.eghp, filters.snp]); 
+
+  const monthOptions = useMemo(() => {
+    return availableMonths.map(m => {
+      const label = new Date(m.year, m.month - 1).toLocaleString('default', { month: 'short', year: 'numeric' });
+      const value = `${m.year}-${m.month.toString().padStart(2, '0')}`;
+      return { label, value };
+    }).reverse();
+  }, [availableMonths]);
 
   return (
     <div className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-end gap-4 z-30 relative overflow-visible">
+      {/* Analysis Month Selector */}
+      <div className="flex flex-col gap-1.5 min-w-[140px]">
+        <label className="text-[10px] font-bold uppercase tracking-wider text-sky-500 ml-1 flex items-center gap-1.5">
+          <CalendarDays className="w-3 h-3" />
+          Analysis Month
+        </label>
+        <select
+          value={filters.analysisMonth}
+          onChange={(e) => updateFilter('analysisMonth', e.target.value)}
+          className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-sky-500 outline-none transition-all cursor-pointer"
+        >
+          {monthOptions.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="h-9 w-px bg-slate-800 mx-1 mb-1"></div>
+
       <FilterDropdown
         label="State"
         options={options.states}

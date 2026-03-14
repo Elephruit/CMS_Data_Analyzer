@@ -74,6 +74,22 @@ impl QueryEngine {
         }
     }
 
+    fn get_analysis_months(&self, filters: &serde_json::Value) -> (u32, u32) {
+        if let Some(month_str) = filters["analysisMonth"].as_str() {
+            if let Ok(ym) = month_str.parse::<crate::model::YearMonth>() {
+                let current = ym.to_yyyymm();
+                let (prior_year, prior_month) = if ym.month == 1 {
+                    (ym.year - 1, 12)
+                } else {
+                    (ym.year, ym.month - 1)
+                };
+                let prior = (prior_year as u32 * 100) + prior_month as u32;
+                return (current, prior);
+            }
+        }
+        (self.latest_yyyymm, self.prior_yyyymm)
+    }
+
     fn matches_filters(&self, series: &PlanCountySeries, filters: &serde_json::Value, exclude_dim: Option<&str>) -> bool {
         let plan_lookup = match &self.plan_lookup { Some(l) => l, None => return false };
         let county_lookup = match &self.county_lookup { Some(l) => l, None => return false };
@@ -361,6 +377,7 @@ impl QueryEngine {
     }
 
     pub fn get_dashboard_summary(&self, current_filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, _) = self.get_analysis_months(current_filters);
         let mut total_enrollment: u64 = 0;
         let mut unique_plans = HashSet::new();
         let mut unique_counties = HashSet::new();
@@ -369,10 +386,8 @@ impl QueryEngine {
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
                 if self.matches_filters(series, current_filters, None) {
-                    if let Some(val) = series.get_enrollment(self.latest_yyyymm) {
+                    if let Some(val) = series.get_enrollment(current_yyyymm) {
                         total_enrollment += val as u64;
-                    }
-                    if series.get_enrollment(self.latest_yyyymm).is_some() {
                         unique_plans.insert(series.plan_key);
                         unique_counties.insert(series.county_key);
                         if let Some(p) = plan_lookup.get(&series.plan_key) {
@@ -422,6 +437,7 @@ impl QueryEngine {
     pub fn get_explorer_data(&self, payload: &serde_json::Value) -> Result<serde_json::Value> {
         let grain = payload["grain"].as_str().unwrap_or("parentOrg");
         let filters = &payload["filters"];
+        let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
         let mut aggregates: HashMap<String, (u64, u64)> = HashMap::new();
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = 
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
@@ -435,8 +451,8 @@ impl QueryEngine {
                         "county" => format!("{}|{}", county.state_code, county.county_name),
                         _ => "Unknown".to_string(),
                     };
-                    let latest_val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0);
-                    let prior_val = series.get_enrollment(self.prior_yyyymm).unwrap_or(0);
+                    let latest_val = series.get_enrollment(current_yyyymm).unwrap_or(0);
+                    let prior_val = series.get_enrollment(prior_yyyymm).unwrap_or(0);
                     let entry = aggregates.entry(agg_key).or_insert((0, 0));
                     entry.0 += latest_val as u64;
                     entry.1 += prior_val as u64;
@@ -445,6 +461,7 @@ impl QueryEngine {
         }
         let mut rows = Vec::new();
         for (name, (latest, prior)) in aggregates {
+            if latest == 0 && prior == 0 { continue; }
             let change = latest as i64 - prior as i64;
             let pct_change = if prior > 0 { (change as f64 / prior as f64) * 100.0 } else { 0.0 };
             rows.push(serde_json::json!({
@@ -452,10 +469,11 @@ impl QueryEngine {
             }));
         }
         rows.sort_by_key(|r| std::cmp::Reverse(r["current"].as_u64().unwrap_or(0)));
-        Ok(serde_json::json!({ "grain": grain, "latestMonth": self.latest_yyyymm, "priorMonth": self.prior_yyyymm, "rows": rows }))
+        Ok(serde_json::json!({ "grain": grain, "latestMonth": current_yyyymm, "priorMonth": prior_yyyymm, "rows": rows }))
     }
 
     pub fn get_org_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, _) = self.get_analysis_months(filters);
         let mut org_data: HashMap<String, (u64, HashMap<u32, u64>)> = HashMap::new(); 
         let mut total_market_enrollment: u64 = 0;
         if let (Some(plan_lookup), Some(_), Some(series_cache)) = 
@@ -463,7 +481,7 @@ impl QueryEngine {
             for series in series_cache.values() {
                 if self.matches_filters(series, filters, None) {
                     if let Some(p) = plan_lookup.get(&series.plan_key) {
-                        let latest_val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0) as u64;
+                        let latest_val = series.get_enrollment(current_yyyymm).unwrap_or(0) as u64;
                         let entry = org_data.entry(p.parent_org.clone()).or_insert((0, HashMap::new()));
                         entry.0 += latest_val;
                         total_market_enrollment += latest_val;
@@ -498,17 +516,18 @@ impl QueryEngine {
             }));
         }
         orgs_list.sort_by_key(|o| std::cmp::Reverse(o["enrollment"].as_u64().unwrap_or(0)));
-        Ok(serde_json::json!({ "totalMarketEnrollment": total_market_enrollment, "latestMonth": self.latest_yyyymm, "organizations": orgs_list }))
+        Ok(serde_json::json!({ "totalMarketEnrollment": total_market_enrollment, "latestMonth": current_yyyymm, "organizations": orgs_list }))
     }
 
     pub fn get_geo_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, _) = self.get_analysis_months(filters);
         let mut state_data: HashMap<String, u64> = HashMap::new();
         let mut county_data: HashMap<String, u64> = HashMap::new(); 
         if let (Some(county_lookup), Some(series_cache)) = (&self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
                 if self.matches_filters(series, filters, None) {
                     let county = county_lookup.get(&series.county_key).expect("County exist");
-                    let val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0) as u64;
+                    let val = series.get_enrollment(current_yyyymm).unwrap_or(0) as u64;
                     *state_data.entry(county.state_code.clone()).or_insert(0) += val;
                     let county_key = format!("{}|{}", county.state_code, county.county_name);
                     *county_data.entry(county_key).or_insert(0) += val;
@@ -522,21 +541,24 @@ impl QueryEngine {
             serde_json::json!({ "state": parts[0], "name": parts[1], "enrollment": enrollment })
         }).collect();
         counties_list.sort_by_key(|c| std::cmp::Reverse(c["enrollment"].as_u64().unwrap_or(0)));
-        Ok(serde_json::json!({ "latestMonth": self.latest_yyyymm, "states": states_list, "counties": counties_list.into_iter().take(50).collect::<Vec<_>>() }))
+        Ok(serde_json::json!({ "latestMonth": current_yyyymm, "states": states_list, "counties": counties_list.into_iter().take(50).collect::<Vec<_>>() }))
     }
 
     pub fn get_growth_analytics(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
         let mut total_growth: i64 = 0;
         let mut aep_growth: i64 = 0;
         let mut high_flyers = Vec::new();
         if let (Some(plan_lookup), Some(_), Some(series_cache)) = (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
-            let aep_target = 202502;
-            let aep_base = 202412;
+            let year = current_yyyymm / 100;
+            let aep_target = (year * 100) + 2;
+            let aep_base = ((year - 1) * 100) + 12;
+
             let mut plan_aggregates: HashMap<u32, (u64, u64, u64, u64)> = HashMap::new();
             for series in series_cache.values() {
                 if self.matches_filters(series, filters, None) {
-                    let latest_val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0);
-                    let prior_val = series.get_enrollment(self.prior_yyyymm).unwrap_or(0);
+                    let latest_val = series.get_enrollment(current_yyyymm).unwrap_or(0);
+                    let prior_val = series.get_enrollment(prior_yyyymm).unwrap_or(0);
                     let aep_t_val = series.get_enrollment(aep_target).unwrap_or(0);
                     let aep_b_val = series.get_enrollment(aep_base).unwrap_or(0);
                     let entry = plan_aggregates.entry(series.plan_key).or_insert((0, 0, 0, 0));
@@ -562,7 +584,7 @@ impl QueryEngine {
             }
         }
         high_flyers.sort_by_key(|h| std::cmp::Reverse((h["percent"].as_f64().unwrap_or(0.0) * 100.0) as i64));
-        Ok(serde_json::json!({ "latestMonth": self.latest_yyyymm, "priorMonth": self.prior_yyyymm, "totalGrowth": total_growth, "aepGrowth": aep_growth, "highFlyers": high_flyers.into_iter().take(20).collect::<Vec<_>>() }))
+        Ok(serde_json::json!({ "latestMonth": current_yyyymm, "priorMonth": prior_yyyymm, "totalGrowth": total_growth, "aepGrowth": aep_growth, "highFlyers": high_flyers.into_iter().take(20).collect::<Vec<_>>() }))
     }
 
     pub fn get_plan_details(&self, contract_id: &str, plan_id: &str) -> Result<serde_json::Value> {
