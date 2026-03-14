@@ -9,13 +9,17 @@ use tower_http::services::ServeDir;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use crate::query::read_api::QueryEngine;
+use crate::model::PlanCountySeries;
+
+type EngineState = Arc<RwLock<QueryEngine>>;
 
 pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     log::info!("Starting API server on http://{}", addr);
 
-    let engine = Arc::new(QueryEngine::new(store_dir));
+    let engine = Arc::new(RwLock::new(QueryEngine::new(store_dir)));
 
     let app = Router::new()
         .route("/api/status", get(get_status))
@@ -44,6 +48,79 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn rebuild_and_reload(store_dir: &Path) -> anyhow::Result<QueryEngine> {
+    let cache_dir = store_dir.join("cache");
+    std::fs::create_dir_all(&cache_dir)?;
+
+    // 1. Plan Lookup
+    let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
+    let plans = crate::storage::parquet_store::load_plan_dim(&plan_dim_path)?;
+    let plan_count = plans.len();
+    let plan_map: std::collections::HashMap<u32, crate::model::PlanDim> = plans.into_iter().map(|p| (p.plan_key, p)).collect();
+    crate::storage::binary_cache::save_plan_lookup(&plan_map, &cache_dir.join("plan_lookup.bin"))?;
+
+    // 2. County Lookup
+    let county_dim_path = store_dir.join("dims").join("county_dim.parquet");
+    let counties = crate::storage::parquet_store::load_county_dim(&county_dim_path)?;
+    let county_count = counties.len();
+    let county_map: std::collections::HashMap<String, crate::model::CountyDim> = counties
+        .into_iter()
+        .map(|c| (format!("{}|{}", c.state_code, c.county_name), c))
+        .collect();
+    crate::storage::binary_cache::save_county_lookup(&county_map, &cache_dir.join("county_lookup.bin"))?;
+
+    // 3. Series Cache — merge across year partitions
+    let facts_dir = store_dir.join("facts");
+    let mut all_series: std::collections::HashMap<(u32, u32), PlanCountySeries> = std::collections::HashMap::new();
+    if facts_dir.exists() {
+        let mut year_paths: Vec<_> = std::fs::read_dir(&facts_dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        year_paths.sort();
+        for year_path in year_paths {
+            let mut state_paths: Vec<_> = std::fs::read_dir(&year_path)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            state_paths.sort();
+            for state_path in state_paths {
+                let series_path = state_path.join("plan_county_series.parquet");
+                let series_list = crate::storage::parquet_store::load_series_partition(&series_path)?;
+                for new_s in series_list {
+                    let key = (new_s.plan_key, new_s.county_key);
+                    if let Some(existing) = all_series.get_mut(&key) {
+                        let bitmap = new_s.presence_bitmap;
+                        let start_year = (new_s.start_month_key / 100) as i32;
+                        let start_month = (new_s.start_month_key % 100) as i32;
+                        let mut pos = 0usize;
+                        for i in 0..64u32 {
+                            if (bitmap >> i) & 1 != 0 {
+                                let curr = start_month - 1 + i as i32;
+                                let year = start_year + curr / 12;
+                                let month = curr % 12 + 1;
+                                let yyyymm = (year as u32) * 100 + month as u32;
+                                if let Some(&enrollment) = new_s.enrollments.get(pos) {
+                                    existing.add_month(yyyymm, enrollment);
+                                }
+                                pos += 1;
+                            }
+                        }
+                    } else {
+                        all_series.insert(key, new_s);
+                    }
+                }
+            }
+        }
+    }
+    let series_count = all_series.len();
+    crate::storage::binary_cache::save_series_cache(&all_series, &cache_dir.join("series_values.bin"))?;
+
+    log::info!("Cache rebuilt: {} plans, {} counties, {} series", plan_count, county_count, series_count);
+
+    Ok(QueryEngine::new(store_dir))
+}
+
 async fn get_status() -> Json<Value> {
     Json(json!({
         "status": "online",
@@ -52,7 +129,8 @@ async fn get_status() -> Json<Value> {
     }))
 }
 
-async fn get_filter_options(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_filter_options(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_filter_options(&payload) {
         Ok(options) => Ok(Json(options)),
@@ -62,7 +140,8 @@ async fn get_filter_options(State(engine): State<Arc<QueryEngine>>, Json(payload
     res
 }
 
-async fn get_dashboard_summary(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_dashboard_summary(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_dashboard_summary(&payload) {
         Ok(summary) => Ok(Json(summary)),
@@ -72,7 +151,8 @@ async fn get_dashboard_summary(State(engine): State<Arc<QueryEngine>>, Json(payl
     res
 }
 
-async fn get_global_trend(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_global_trend(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_global_trend(&payload) {
         Ok(trend) => Ok(Json(json!(trend))),
@@ -82,7 +162,8 @@ async fn get_global_trend(State(engine): State<Arc<QueryEngine>>, Json(payload):
     res
 }
 
-async fn get_top_movers(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_top_movers(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let from_str = payload["from"].as_str().unwrap_or("2025-01");
     let to_str = payload["to"].as_str().unwrap_or("2025-02");
@@ -99,7 +180,8 @@ async fn get_top_movers(State(engine): State<Arc<QueryEngine>>, Json(payload): J
     res
 }
 
-async fn get_explorer_data(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_explorer_data(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_explorer_data(&payload) {
         Ok(data) => Ok(Json(data)),
@@ -109,7 +191,8 @@ async fn get_explorer_data(State(engine): State<Arc<QueryEngine>>, Json(payload)
     res
 }
 
-async fn get_org_analysis(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_org_analysis(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_org_analysis(&payload) {
         Ok(data) => Ok(Json(data)),
@@ -119,7 +202,8 @@ async fn get_org_analysis(State(engine): State<Arc<QueryEngine>>, Json(payload):
     res
 }
 
-async fn get_geo_analysis(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_geo_analysis(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_geo_analysis(&payload) {
         Ok(data) => Ok(Json(data)),
@@ -129,7 +213,8 @@ async fn get_geo_analysis(State(engine): State<Arc<QueryEngine>>, Json(payload):
     res
 }
 
-async fn get_growth_analytics(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_growth_analytics(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let res = match engine.get_growth_analytics(&payload) {
         Ok(data) => Ok(Json(data)),
@@ -139,7 +224,8 @@ async fn get_growth_analytics(State(engine): State<Arc<QueryEngine>>, Json(paylo
     res
 }
 
-async fn get_plan_details(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn get_plan_details(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
     let start = std::time::Instant::now();
     let contract_id = payload["contract_id"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing contract_id".to_string()))?;
     let plan_id = payload["plan_id"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing plan_id".to_string()))?;
@@ -161,7 +247,7 @@ async fn get_ingested_months() -> Result<Json<Value>, (axum::http::StatusCode, S
     }
 }
 
-async fn trigger_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn trigger_ingest(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let store_dir = Path::new("store");
     let month_str = payload["month"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing month".to_string()))?;
     let month: crate::model::YearMonth = month_str.parse().map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid month format".to_string()))?;
@@ -169,14 +255,22 @@ async fn trigger_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum
 
     match crate::ingest::ingest_month(month, force, store_dir).await {
         Ok(_) => {
-            log::info!("Ingested {} successfully. Cache rebuild recommended.", month_str);
+            match rebuild_and_reload(store_dir) {
+                Ok(new_engine) => {
+                    *engine.write().await = new_engine;
+                    log::info!("Engine reloaded after ingest of {}", month_str);
+                }
+                Err(e) => {
+                    log::error!("Cache rebuild failed after ingest of {}: {}", month_str, e);
+                }
+            }
             Ok(Json(json!({ "status": "success", "month": month_str })))
         },
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
-async fn delete_month(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn delete_month(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let store_dir = Path::new("store");
     let month_str = payload["month"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing month".to_string()))?;
     let month: crate::model::YearMonth = month_str.parse().map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid month format".to_string()))?;
@@ -188,14 +282,24 @@ async fn delete_month(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::
     manifest.source_hashes.remove(&month.to_string());
     crate::storage::manifests::save_manifest(&manifest, &manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Note: Data remains in Parquet until full year delete or vacuum. 
+    // Note: Data remains in Parquet until full year delete or vacuum.
     // Query engine should be updated to respect manifest if we want strict deletion.
     // For now, removing from manifest hides it from the UI.
+
+    match rebuild_and_reload(store_dir) {
+        Ok(new_engine) => {
+            *engine.write().await = new_engine;
+            log::info!("Engine reloaded after delete of month {}", month_str);
+        }
+        Err(e) => {
+            log::error!("Cache rebuild failed after delete of month {}: {}", month_str, e);
+        }
+    }
 
     Ok(Json(json!({ "status": "deleted", "month": month_str })))
 }
 
-async fn delete_year(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+async fn delete_year(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let store_dir = Path::new("store");
     let year = payload["year"].as_i64().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing year".to_string()))? as i32;
 
@@ -209,7 +313,7 @@ async fn delete_year(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::h
     let manifest_path = store_dir.join("manifests").join("months.json");
     let mut manifest = crate::storage::manifests::load_manifest(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     manifest.ingested_months.retain(|m| m.year != year);
-    
+
     // Clean up hashes
     let keys_to_remove: Vec<String> = manifest.source_hashes.keys()
         .filter(|k| k.starts_with(&format!("{}-", year)))
@@ -220,6 +324,16 @@ async fn delete_year(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::h
     }
 
     crate::storage::manifests::save_manifest(&manifest, &manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match rebuild_and_reload(store_dir) {
+        Ok(new_engine) => {
+            *engine.write().await = new_engine;
+            log::info!("Engine reloaded after delete of year {}", year);
+        }
+        Err(e) => {
+            log::error!("Cache rebuild failed after delete of year {}: {}", year, e);
+        }
+    }
 
     Ok(Json(json!({ "status": "deleted", "year": year })))
 }

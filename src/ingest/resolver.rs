@@ -47,13 +47,51 @@ impl KeyResolver {
                plan.plan_type == row.plan_type &&
                plan.is_egwp == row.is_egwp &&
                plan.is_snp == row.is_snp {
+                
+                // Same metadata. Just ensure validity range covers this month.
+                if month_yyyymm < plan.valid_from_month {
+                    plan.valid_from_month = month_yyyymm;
+                }
+                if let Some(to) = plan.valid_to_month {
+                    if month_yyyymm >= to {
+                        plan.valid_to_month = None; // Extend to infinity again if we found it later
+                    }
+                }
                 return plan.plan_key;
             }
 
             // Material change detected: version the record
-            log::info!("Plan metadata changed for {}. Versioning.", natural_key);
-            plan.is_current = false;
-            plan.valid_to_month = Some(month_yyyymm);
+            // If the month we are ingesting is LATER than the current version's start, 
+            // the current version ends at this month, and we create a new one starting at this month.
+            if month_yyyymm > plan.valid_from_month {
+                log::info!("Plan metadata changed for {} at {}. Versioning.", natural_key, month_yyyymm);
+                plan.is_current = false;
+                plan.valid_to_month = Some(month_yyyymm);
+            } else {
+                // If the month we are ingesting is EARLIER than current version's start,
+                // we should probably create a version for this earlier period.
+                // For MVP, we'll just log it. This happens if months are ingested out of order.
+                log::warn!("Plan metadata changed for {} at {} (EARLIER than current version {}).", natural_key, month_yyyymm, plan.valid_from_month);
+                // We'll still create a new version, but it won't be "current" if there's already a later one
+                // Actually, let's keep it simple: new version starts at month_yyyymm and ends at plan.valid_from_month
+                let new_key = self.next_plan_key;
+                self.next_plan_key += 1;
+                let new_plan = PlanDim {
+                    plan_key: new_key,
+                    contract_id: row.contract_id.clone(),
+                    plan_id: row.plan_id.clone(),
+                    plan_name: row.plan_name.clone(),
+                    parent_org: row.parent_org.clone(),
+                    plan_type: row.plan_type.clone(),
+                    is_egwp: row.is_egwp,
+                    is_snp: row.is_snp,
+                    valid_from_month: month_yyyymm,
+                    valid_to_month: Some(plan.valid_from_month),
+                    is_current: false,
+                };
+                self.plans.insert(new_key, new_plan);
+                return new_key;
+            }
         }
 
         // Create new version

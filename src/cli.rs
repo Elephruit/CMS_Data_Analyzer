@@ -22,10 +22,10 @@ pub enum Commands {
     /// Discover and download a range of months
     FetchRange {
         /// Start month in YYYY-MM format
-        #[arg(short, long)]
+        #[arg(long)]
         from: String,
         /// End month in YYYY-MM format
-        #[arg(short, long)]
+        #[arg(long)]
         to: String,
         /// Force re-download even if already ingested
         #[arg(short, long)]
@@ -85,18 +85,18 @@ pub enum QueryCommands {
     StateRollup {
         #[arg(short, long)]
         state: String,
-        #[arg(short, long)]
+        #[arg(long)]
         from: String,
-        #[arg(short, long)]
+        #[arg(long)]
         to: String,
     },
     /// Top enrollment movers between two months
     TopMovers {
         #[arg(short, long)]
         state: Option<String>,
-        #[arg(short, long)]
+        #[arg(long)]
         from: String,
-        #[arg(short, long)]
+        #[arg(long)]
         to: String,
         #[arg(short, long, default_value_t = 10)]
         limit: usize,

@@ -11,33 +11,52 @@ pub struct PlanCountySeries {
 
 impl PlanCountySeries {
     pub fn add_month(&mut self, month_yyyymm: u32, enrollment: u32) {
-        // Calculate offset from start_month
-        // For simplicity in MVP, we'll assume months are consecutive or handled by bitmap
-        // Real implementation would calculate month index based on a global month dimension.
-        // Let's assume start_month_key is 202501.
+        if self.start_month_key == 0 {
+            self.start_month_key = month_yyyymm;
+            self.presence_bitmap = 1;
+            self.enrollments = vec![enrollment];
+            return;
+        }
+
         let start_year = (self.start_month_key / 100) as i32;
         let start_month = (self.start_month_key % 100) as i32;
         let curr_year = (month_yyyymm / 100) as i32;
         let curr_month = (month_yyyymm % 100) as i32;
         
-        let month_index = ((curr_year - start_year) * 12 + (curr_month - start_month)) as u32;
-        
-        if month_index >= 64 {
-            log::warn!("Month index {} out of range for bitmap", month_index);
-            return;
-        }
+        let month_diff = (curr_year - start_year) * 12 + (curr_month - start_month);
 
-        let mask = 1u64 << month_index;
-        if self.presence_bitmap & mask != 0 {
-            // Month already exists, update it
-            // We need to find its position in the enrollments vector
-            let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
-            self.enrollments[pos] = enrollment;
+        if month_diff < 0 {
+            // New month is earlier than our current start
+            let shift = (-month_diff) as u32;
+            if shift >= 64 {
+                log::warn!("Month index {} too far back for bitmap", month_diff);
+                return;
+            }
+            // Shift current bitmap LEFT to make room at the beginning (bit 0)
+            self.presence_bitmap <<= shift;
+            // Set new start month
+            self.start_month_key = month_yyyymm;
+            // Insert at pos 0
+            self.enrollments.insert(0, enrollment);
+            self.presence_bitmap |= 1;
         } else {
-            // New month, insert it
-            let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
-            self.enrollments.insert(pos, enrollment);
-            self.presence_bitmap |= mask;
+            let month_index = month_diff as u32;
+            if month_index >= 64 {
+                log::warn!("Month index {} out of range for bitmap", month_index);
+                return;
+            }
+
+            let mask = 1u64 << month_index;
+            if self.presence_bitmap & mask != 0 {
+                // Month already exists, update it
+                let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+                self.enrollments[pos] = enrollment;
+            } else {
+                // New month, insert it
+                let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+                self.enrollments.insert(pos, enrollment);
+                self.presence_bitmap |= mask;
+            }
         }
     }
 

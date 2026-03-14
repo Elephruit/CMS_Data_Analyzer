@@ -21,16 +21,29 @@ pub async fn discover_month(month: YearMonth) -> Result<CmsSourceInfo> {
     }
 
     let html_content = response.text().await?;
-    
+
     let month_page_url = {
         let document = Html::parse_document(&html_content);
         let month_link_selector = Selector::parse("a").unwrap();
-        let target_month_slug = format!("{}-{:02}", month.year, month.month);
+
+        const MONTH_NAMES: [&str; 12] = [
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december",
+        ];
+        let month_name = MONTH_NAMES[(month.month as usize) - 1];
+
+        let slugs: Vec<String> = vec![
+            format!("{}-{:02}", month.year, month.month),
+            format!("{}-{}", month_name, month.year),
+            format!("{}-{}", month.year, month.month),
+        ];
+
         let mut url = None;
 
         for element in document.select(&month_link_selector) {
             if let Some(href) = element.value().attr("href") {
-                if href.contains(&target_month_slug) {
+                let href_lower = href.to_lowercase();
+                if slugs.iter().any(|s| href_lower.contains(s.as_str())) {
                     let full_url = if href.starts_with("http") {
                         href.to_string()
                     } else {
@@ -53,7 +66,7 @@ pub async fn discover_month(month: YearMonth) -> Result<CmsSourceInfo> {
     }
 
     let html_content = response.text().await?;
-    
+
     let zip_url = {
         let document = Html::parse_document(&html_content);
         let zip_selector = Selector::parse("a[href$='.zip']").unwrap();

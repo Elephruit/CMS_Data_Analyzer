@@ -26,6 +26,7 @@ export const DataManagement: React.FC = () => {
   const { availableMonths: ingestedMonths, refreshAvailableMonths } = useFilters();
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState<Record<string, boolean>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
   
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth() + 1;
@@ -51,7 +52,8 @@ export const DataManagement: React.FC = () => {
   const handleAction = async (action: 'ingest' | 'delete', year: number, month: number) => {
     const monthKey = `${year}-${month.toString().padStart(2, '0')}`;
     setProcessing(prev => ({ ...prev, [monthKey]: true }));
-    
+    setErrors(prev => { const next = { ...prev }; delete next[monthKey]; return next; });
+
     try {
       const endpoint = action === 'ingest' ? 'ingest' : 'delete-month';
       const response = await fetch(`http://127.0.0.1:3000/api/data/${endpoint}`, {
@@ -59,12 +61,16 @@ export const DataManagement: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ month: monthKey }),
       });
-      
+
       if (response.ok) {
         await refreshAvailableMonths();
+      } else {
+        const errorText = await response.text();
+        setErrors(prev => ({ ...prev, [monthKey]: errorText || `HTTP ${response.status}` }));
       }
     } catch (error) {
       console.error(`Action ${action} failed for ${monthKey}:`, error);
+      setErrors(prev => ({ ...prev, [monthKey]: String(error) }));
     } finally {
       setProcessing(prev => ({ ...prev, [monthKey]: false }));
     }
@@ -161,64 +167,74 @@ export const DataManagement: React.FC = () => {
                   const isProcessing = processing[monthKey];
 
                   return (
-                    <div 
+                    <div
                       key={monthKey}
                       className={cn(
-                        "group/month p-4 rounded-xl border flex items-center justify-between transition-all duration-200",
-                        ingested 
-                          ? "bg-sky-500/5 border-sky-500/20 hover:border-sky-500/50" 
-                          : future 
-                          ? "bg-slate-900/20 border-slate-800/50 opacity-30 grayscale cursor-not-allowed" 
+                        "group/month p-4 rounded-xl border flex flex-col gap-2 transition-all duration-200",
+                        ingested
+                          ? "bg-sky-500/5 border-sky-500/20 hover:border-sky-500/50"
+                          : future
+                          ? "bg-slate-900/20 border-slate-800/50 opacity-30 grayscale cursor-not-allowed"
+                          : errors[monthKey]
+                          ? "bg-rose-500/5 border-rose-500/30"
                           : "bg-slate-800/20 border-slate-800 hover:border-slate-600"
                       )}
                     >
-                      <div className="flex flex-col gap-1">
-                        <span className={cn(
-                          "text-xs font-black uppercase tracking-widest",
-                          ingested ? "text-sky-400" : "text-slate-500"
-                        )}>
-                          {name}
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          {ingested ? (
-                            <span className="text-[9px] font-bold text-sky-500/80 uppercase tracking-tighter flex items-center gap-1">
-                              <CheckCircle2 className="w-2.5 h-2.5" />
-                              Populated
-                            </span>
-                          ) : future ? (
-                            <span className="text-[9px] font-bold text-slate-600 uppercase tracking-tighter flex items-center gap-1">
-                              <Calendar className="w-2.5 h-2.5" />
-                              Locked
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">
-                              Available
-                            </span>
-                          )}
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-col gap-1">
+                          <span className={cn(
+                            "text-xs font-black uppercase tracking-widest",
+                            ingested ? "text-sky-400" : "text-slate-500"
+                          )}>
+                            {name}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {ingested ? (
+                              <span className="text-[9px] font-bold text-sky-500/80 uppercase tracking-tighter flex items-center gap-1">
+                                <CheckCircle2 className="w-2.5 h-2.5" />
+                                Populated
+                              </span>
+                            ) : future ? (
+                              <span className="text-[9px] font-bold text-slate-600 uppercase tracking-tighter flex items-center gap-1">
+                                <Calendar className="w-2.5 h-2.5" />
+                                Locked
+                              </span>
+                            ) : (
+                              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">
+                                Available
+                              </span>
+                            )}
+                          </div>
                         </div>
+
+                        {!future && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
+                              disabled={isProcessing}
+                              className={cn(
+                                "p-2 rounded-lg transition-all",
+                                ingested
+                                  ? "bg-slate-800/50 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
+                                  : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white shadow-lg shadow-sky-500/0 hover:shadow-sky-500/20"
+                              )}
+                            >
+                              {isProcessing ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : ingested ? (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              ) : (
+                                <Download className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        )}
                       </div>
 
-                      {!future && (
-                        <div className="flex items-center gap-2">
-                          <button 
-                            onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
-                            disabled={isProcessing}
-                            className={cn(
-                              "p-2 rounded-lg transition-all",
-                              ingested 
-                                ? "bg-slate-800/50 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10" 
-                                : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white shadow-lg shadow-sky-500/0 hover:shadow-sky-500/20"
-                            )}
-                          >
-                            {isProcessing ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : ingested ? (
-                              <Trash2 className="w-3.5 h-3.5" />
-                            ) : (
-                              <Download className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
+                      {errors[monthKey] && (
+                        <p className="text-[9px] font-mono text-rose-400 leading-tight break-all">
+                          {errors[monthKey]}
+                        </p>
                       )}
                     </div>
                   );

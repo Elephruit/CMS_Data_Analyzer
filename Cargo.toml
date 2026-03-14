@@ -3,6 +3,14 @@ name = "ma_store"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "ma_store"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ma_store"
+path = "src/main.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
