@@ -3,6 +3,7 @@ import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
 import { EnrollmentExplorer } from './pages/EnrollmentExplorer';
 import { OrganizationAnalysis } from './pages/OrganizationAnalysis';
+import { Geography } from './pages/Geography';
 import { DataManagement } from './pages/DataManagement';
 import { FilterProvider } from './context/FilterContext';
 
@@ -23,7 +24,7 @@ function App() {
             <Route path="/explorer" element={<EnrollmentExplorer />} />
             <Route path="/organizations" element={<OrganizationAnalysis />} />
             <Route path="/plans" element={<Placeholder title="Plans" />} />
-            <Route path="/geography" element={<Placeholder title="Geography" />} />
+            <Route path="/geography" element={<Geography />} />
             <Route path="/growth" element={<Placeholder title="Growth & AEP" />} />
             <Route path="/data" element={<DataManagement />} />
             <Route path="/exports" element={<Placeholder title="Exports" />} />

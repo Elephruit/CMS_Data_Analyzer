@@ -612,4 +612,69 @@ impl QueryEngine {
             "organizations": orgs_list
         }))
     }
+
+    pub fn get_geo_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let sel_states: Vec<String> = filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+
+        let mut latest_yyyymm = 0;
+        let mut state_data: HashMap<String, u64> = HashMap::new();
+        let mut county_data: HashMap<String, u64> = HashMap::new(); // "STATE|COUNTY" -> enrollment
+
+        if self.cache_enabled {
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            // Find latest month
+            for series in series_cache.values() {
+                let start_year = (series.start_month_key / 100) as i32;
+                let start_month = (series.start_month_key % 100) as i32;
+                for i in 0..64 {
+                    if (series.presence_bitmap >> i) & 1 != 0 {
+                        let m = (start_year as u32 * 100) + (start_month as u32 + i as u32 - 1);
+                        if m > latest_yyyymm { latest_yyyymm = m; }
+                    }
+                }
+            }
+
+            for series in series_cache.values() {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                if let Some(c) = county {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    let val = series.get_enrollment(latest_yyyymm).unwrap_or(0) as u64;
+                    
+                    *state_data.entry(c.state_code.clone()).or_insert(0) += val;
+                    
+                    if state_match {
+                        let county_key = format!("{}|{}", c.state_code, c.county_name);
+                        *county_data.entry(county_key).or_insert(0) += val;
+                    }
+                }
+            }
+        }
+
+        let mut states_list: Vec<_> = state_data.into_iter()
+            .map(|(name, enrollment)| serde_json::json!({ "name": name, "enrollment": enrollment }))
+            .collect();
+        states_list.sort_by_key(|s| std::cmp::Reverse(s["enrollment"].as_u64().unwrap_or(0)));
+
+        let mut counties_list: Vec<_> = county_data.into_iter()
+            .map(|(key, enrollment)| {
+                let parts: Vec<&str> = key.split('|').collect();
+                serde_json::json!({ 
+                    "state": parts[0], 
+                    "name": parts[1], 
+                    "enrollment": enrollment 
+                })
+            })
+            .collect();
+        counties_list.sort_by_key(|c| std::cmp::Reverse(c["enrollment"].as_u64().unwrap_or(0)));
+
+        Ok(serde_json::json!({
+            "latestMonth": latest_yyyymm,
+            "states": states_list,
+            "counties": counties_list.into_iter().take(50).collect::<Vec<_>>()
+        }))
+    }
 }
