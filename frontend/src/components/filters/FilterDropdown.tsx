@@ -55,10 +55,20 @@ export const FilterDropdown: React.FC<FilterDropdownProps> = ({
     onChange(newValues);
   };
 
+  const toggleAll = () => {
+    if (selectedValues.length === options.length) {
+      onChange([]);
+    } else {
+      onChange(options.map(o => o.value));
+    }
+  };
+
   const clearSelection = (e: React.MouseEvent) => {
     e.stopPropagation();
     onChange([]);
   };
+
+  const isAllSelected = options.length > 0 && selectedValues.length === options.length;
 
   return (
     <div className="relative" ref={containerRef}>
@@ -77,6 +87,8 @@ export const FilterDropdown: React.FC<FilterDropdownProps> = ({
           <span className="truncate max-w-[120px]">
             {selectedValues.length === 0
               ? placeholder
+              : isAllSelected
+              ? `All ${label}s`
               : selectedValues.length === 1
               ? options.find((o) => o.value === selectedValues[0])?.label || selectedValues[0]
               : `${selectedValues.length} selected`}
@@ -92,7 +104,7 @@ export const FilterDropdown: React.FC<FilterDropdownProps> = ({
 
       {isOpen && (
         <div className="absolute z-50 mt-2 w-64 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl shadow-black/50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
-          <div className="p-2 border-b border-slate-700">
+          <div className="p-2 border-b border-slate-700 space-y-2">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
               <input
@@ -104,6 +116,20 @@ export const FilterDropdown: React.FC<FilterDropdownProps> = ({
                 autoFocus
               />
             </div>
+            {!searchQuery && options.length > 0 && (
+              <button
+                onClick={toggleAll}
+                className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold bg-slate-700/50 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+              >
+                <div className={cn(
+                  "w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0",
+                  isAllSelected ? "bg-sky-500 border-sky-500" : "border-slate-500"
+                )}>
+                  {isAllSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                </div>
+                {isAllSelected ? 'DESELECT ALL' : 'SELECT ALL'}
+              </button>
+            )}
           </div>
           <div className="max-h-60 overflow-y-auto p-1 custom-scrollbar">
             {loading ? (

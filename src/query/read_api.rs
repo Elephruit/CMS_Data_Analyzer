@@ -345,13 +345,16 @@ impl QueryEngine {
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
                 if self.matches_filters(series, current_filters) {
-                    if let Some(&latest) = series.enrollments.last() {
-                        total_enrollment += latest as u64;
+                    if let Some(val) = series.get_enrollment(self.latest_yyyymm) {
+                        total_enrollment += val as u64;
                     }
-                    unique_plans.insert(series.plan_key);
-                    unique_counties.insert(series.county_key);
-                    if let Some(p) = plan_lookup.get(&series.plan_key) {
-                        unique_orgs.insert(p.parent_org.clone());
+                    // For plan count, only count if it has data in the latest month
+                    if series.get_enrollment(self.latest_yyyymm).is_some() {
+                        unique_plans.insert(series.plan_key);
+                        unique_counties.insert(series.county_key);
+                        if let Some(p) = plan_lookup.get(&series.plan_key) {
+                            unique_orgs.insert(p.parent_org.clone());
+                        }
                     }
                 }
             }
