@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   Cell
 } from 'recharts';
-import { TrendingUp, Zap, Sparkles, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { TrendingUp, Zap, Sparkles, ArrowUpRight, Download } from 'lucide-react';
 
 interface HighFlyer {
   name: string;
@@ -20,12 +20,14 @@ interface HighFlyer {
   current: number;
   change: number;
   percent: number;
+  aepChange: number;
 }
 
 interface GrowthData {
   latestMonth: number;
   priorMonth: number;
   totalGrowth: number;
+  aepGrowth: number;
   highFlyers: HighFlyer[];
 }
 
@@ -54,6 +56,33 @@ export const GrowthAnalytics: React.FC = () => {
 
     fetchData();
   }, [filters]);
+
+  const exportToCSV = () => {
+    if (!data) return;
+    const headers = ['Plan Name', 'Contract', 'Plan ID', 'Current Enrollment', 'MoM Change', '% Change', 'AEP Change'];
+    const csvContent = [
+      headers.join(','),
+      ...data.highFlyers.map(f => [
+        `"${f.name}"`,
+        f.contract,
+        f.plan,
+        f.current,
+        f.change,
+        f.percent.toFixed(2),
+        f.aepChange
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `growth_analysis_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const COLORS = ['#10b981', '#34d399', '#6ee7b7', '#a7f3d0', '#d1fae5'];
 
@@ -89,9 +118,9 @@ export const GrowthAnalytics: React.FC = () => {
         />
         <StatCard 
           label="AEP Impact Status" 
-          value="Calculated" 
-          change="AEP Analysis Active"
-          changeType="positive"
+          value={(data?.aepGrowth || 0).toLocaleString()} 
+          change="Feb 2025 vs Dec 2024"
+          changeType={data?.aepGrowth && data.aepGrowth > 0 ? 'positive' : 'negative'}
           icon={Sparkles} 
           loading={loading}
         />
@@ -101,7 +130,7 @@ export const GrowthAnalytics: React.FC = () => {
         <Card className="lg:col-span-2 flex flex-col min-h-[500px]">
           <div className="flex items-center justify-between mb-8">
             <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">High Flyers: Top Growth by %</h2>
-            <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Plans > 500 Enrollment</div>
+            <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Plans &gt; 500 Enrollment</div>
           </div>
           <div className="flex-1 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -141,7 +170,15 @@ export const GrowthAnalytics: React.FC = () => {
         </Card>
 
         <Card className="flex flex-col h-[500px]">
-          <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest mb-6">Growth Leaderboard</h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Growth Leaderboard</h2>
+            <button 
+              onClick={exportToCSV}
+              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+          </div>
           <div className="flex-1 overflow-auto custom-scrollbar pr-2">
             <div className="space-y-4">
               {data?.highFlyers.map((flyer, i) => (

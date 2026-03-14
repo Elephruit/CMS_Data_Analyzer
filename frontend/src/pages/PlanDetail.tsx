@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, PageHeader, StatCard } from '../components/ui/Primitives';
+import { Card } from '../components/ui/Primitives';
 import { 
   AreaChart, 
   Area, 
@@ -9,7 +9,7 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-import { Search, MapPin, Users, Building2, Calendar } from 'lucide-react';
+import { Search } from 'lucide-react';
 
 interface PlanMetadata {
   name: string;

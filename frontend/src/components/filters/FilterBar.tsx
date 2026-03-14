@@ -56,7 +56,7 @@ export const FilterBar: React.FC = () => {
   ];
 
   return (
-    <div className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-end gap-4 overflow-x-auto no-scrollbar">
+    <div className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-end gap-4 z-30 relative">
       <FilterDropdown
         label="State"
         options={options.states}

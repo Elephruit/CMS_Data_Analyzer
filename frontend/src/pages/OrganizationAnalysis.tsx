@@ -13,7 +13,7 @@ import {
   Line,
   Legend
 } from 'recharts';
-import { Building2, TrendingUp, PieChart as PieChartIcon, ArrowUpRight } from 'lucide-react';
+import { Building2, TrendingUp, PieChart as PieChartIcon, ArrowUpRight, Download } from 'lucide-react';
 
 interface OrgTrendPoint {
   month: number;
@@ -93,6 +93,29 @@ export const OrganizationAnalysis: React.FC = () => {
 
   const COLORS = ['#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b'];
 
+  const exportToCSV = () => {
+    if (!data) return;
+    const headers = ['Organization Name', 'Enrollment', 'Market Share %'];
+    const csvContent = [
+      headers.join(','),
+      ...data.organizations.map(org => [
+        `"${org.name}"`,
+        org.enrollment,
+        org.marketShare.toFixed(2)
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `org_analysis_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -158,7 +181,7 @@ export const OrganizationAnalysis: React.FC = () => {
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px' }}
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
                   labelStyle={{ color: '#0ea5e9', fontSize: '10px', fontWeight: 'bold', marginBottom: '4px' }}
-                  formatter={(value: number) => [value.toFixed(2) + '%', 'Market Share']}
+                  formatter={(value: any) => [value?.toFixed(2) + '%', 'Market Share']}
                 />
                 <Bar dataKey="marketShare" radius={[0, 4, 4, 0]} barSize={24} fill="#0ea5e9">
                   {top10.map((_, index) => (
@@ -212,8 +235,15 @@ export const OrganizationAnalysis: React.FC = () => {
       </div>
 
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-        <div className="p-6 border-b border-slate-800">
+        <div className="p-6 border-b border-slate-800 flex items-center justify-between">
           <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Organizational Deep-Dive</h2>
+          <button 
+            onClick={exportToCSV}
+            className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg border border-slate-700 transition-all"
+          >
+            <Download className="w-3.5 h-3.5" />
+            EXPORT CSV
+          </button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">

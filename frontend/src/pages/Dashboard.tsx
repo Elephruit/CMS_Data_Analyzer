@@ -10,7 +10,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { ArrowUpRight, ArrowDownRight, Minus, LayoutDashboard, Building2, Users, MapPin } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, LayoutDashboard, Building2, Users, MapPin } from 'lucide-react';
 
 interface DashboardSummary {
   totalEnrollment: number;

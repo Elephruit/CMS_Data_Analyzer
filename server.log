@@ -1,0 +1,7 @@
+[2026-03-14T18:27:02Z INFO  ma_store] Starting server on port 3000
+[2026-03-14T18:27:02Z INFO  ma_store::api::server] Starting API server on http://127.0.0.1:3000
+[2026-03-14T18:27:02Z INFO  ma_store::query::read_api] QueryEngine: Binary cache loaded and enabled.
+[2026-03-14T18:27:22Z INFO  ma_store::api::server] get_filter_options took 529.30425ms
+[2026-03-14T18:27:23Z INFO  ma_store::api::server] get_dashboard_summary took 286.038792ms
+[2026-03-14T18:27:23Z INFO  ma_store::api::server] get_global_trend took 192.617917ms
+[2026-03-14T18:27:23Z INFO  ma_store::api::server] get_explorer_data took 220.879833ms

@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   Cell
 } from 'recharts';
-import { Map as MapIcon, Globe, Navigation, ArrowUpDown } from 'lucide-react';
+import { Map as MapIcon, Globe, Navigation, ArrowUpDown, Download } from 'lucide-react';
 
 interface StateData {
   name: string;
@@ -75,6 +75,29 @@ export const Geography: React.FC = () => {
 
   const topStates = useMemo(() => data?.states.slice(0, 10) || [], [data]);
   const COLORS = ['#0ea5e9', '#38bdf8', '#7dd3fc', '#bae6fd', '#e0f2fe'];
+
+  const exportToCSV = () => {
+    if (!data) return;
+    const headers = ['State', 'County', 'Enrollment'];
+    const csvContent = [
+      headers.join(','),
+      ...data.counties.map(c => [
+        `"${c.state}"`,
+        `"${c.name}"`,
+        c.enrollment
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `geo_analysis_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   if (loading && !data) {
     return (
@@ -142,7 +165,13 @@ export const Geography: React.FC = () => {
         <Card className="flex flex-col">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">County-Level Breakdown</h2>
-            <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Top 50 Counties</div>
+            <button 
+              onClick={exportToCSV}
+              className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg border border-slate-700 transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />
+              EXPORT CSV
+            </button>
           </div>
           <div className="flex-1 overflow-auto max-h-[340px] pr-2 custom-scrollbar">
             <table className="w-full text-left border-collapse">
@@ -164,7 +193,7 @@ export const Geography: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {sortedCounties.map((county, i) => (
+                {sortedCounties.map((county) => (
                   <tr key={`${county.state}-${county.name}`} className="hover:bg-slate-800/30 transition-colors">
                     <td className="py-3 text-sm font-bold text-white">{county.name}</td>
                     <td className="py-3 text-sm text-slate-400 text-center">{county.state}</td>
