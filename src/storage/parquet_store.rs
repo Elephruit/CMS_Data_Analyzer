@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arrow::array::{UInt32Array, StringArray, BooleanArray, ArrayRef, AsArray, UInt64Array, ListArray};
+use arrow::array::{UInt32Array, StringArray, BooleanArray, ArrayRef, AsArray, UInt64Array, ListArray, Array};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{UInt32Type, Field, DataType};
 use arrow::record_batch::RecordBatch;
@@ -31,9 +31,16 @@ pub fn load_plan_dim(path: &Path) -> Result<Vec<PlanDim>> {
         let is_egwps = batch.column(6).as_boolean();
         let is_snps = batch.column(7).as_boolean();
         let valid_froms = batch.column(8).as_primitive::<UInt32Type>();
-        let is_currents = batch.column(9).as_boolean();
+        let valid_tos = batch.column(9).as_primitive::<UInt32Type>();
+        let is_currents = batch.column(10).as_boolean();
 
         for i in 0..batch.num_rows() {
+            let valid_to = if valid_tos.is_valid(i) {
+                Some(valid_tos.value(i))
+            } else {
+                None
+            };
+
             plans.push(PlanDim {
                 plan_key: plan_keys.value(i),
                 contract_id: contract_ids.value(i).to_string(),
@@ -44,7 +51,7 @@ pub fn load_plan_dim(path: &Path) -> Result<Vec<PlanDim>> {
                 is_egwp: is_egwps.value(i),
                 is_snp: is_snps.value(i),
                 valid_from_month: valid_froms.value(i),
-                valid_to_month: None,
+                valid_to_month: valid_to,
                 is_current: is_currents.value(i),
             });
         }
@@ -62,6 +69,7 @@ pub fn save_plan_dim(plans: &[PlanDim], path: &Path) -> Result<()> {
     let is_egwps = BooleanArray::from(plans.iter().map(|p| p.is_egwp).collect::<Vec<_>>());
     let is_snps = BooleanArray::from(plans.iter().map(|p| p.is_snp).collect::<Vec<_>>());
     let valid_froms = UInt32Array::from(plans.iter().map(|p| p.valid_from_month).collect::<Vec<_>>());
+    let valid_tos = UInt32Array::from(plans.iter().map(|p| p.valid_to_month).collect::<Vec<_>>());
     let is_currents = BooleanArray::from(plans.iter().map(|p| p.is_current).collect::<Vec<_>>());
 
     let batch = RecordBatch::try_from_iter(vec![
@@ -74,6 +82,7 @@ pub fn save_plan_dim(plans: &[PlanDim], path: &Path) -> Result<()> {
         ("is_egwp", Arc::new(is_egwps) as ArrayRef),
         ("is_snp", Arc::new(is_snps) as ArrayRef),
         ("valid_from_month", Arc::new(valid_froms) as ArrayRef),
+        ("valid_to_month", Arc::new(valid_tos) as ArrayRef),
         ("is_current", Arc::new(is_currents) as ArrayRef),
     ])?;
 

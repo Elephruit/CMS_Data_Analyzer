@@ -5,7 +5,6 @@ use crate::model::{PlanDim, YearMonth, PlanCountySeries, CountyDim};
 use crate::storage;
 
 pub struct QueryEngine {
-    pub store_dir: std::path::PathBuf,
     pub cache_enabled: bool,
     pub plan_lookup: Option<HashMap<u32, PlanDim>>,
     pub county_lookup: Option<HashMap<u32, CountyDim>>,
@@ -65,7 +64,6 @@ impl QueryEngine {
         }
 
         Self {
-            store_dir: store_dir.to_path_buf(),
             cache_enabled,
             plan_lookup,
             county_lookup,
@@ -76,50 +74,63 @@ impl QueryEngine {
         }
     }
 
-    fn matches_filters(&self, series: &PlanCountySeries, filters: &serde_json::Value) -> bool {
+    fn matches_filters(&self, series: &PlanCountySeries, filters: &serde_json::Value, exclude_dim: Option<&str>) -> bool {
         let plan_lookup = match &self.plan_lookup { Some(l) => l, None => return false };
         let county_lookup = match &self.county_lookup { Some(l) => l, None => return false };
         
         let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => return false };
         let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => return false };
 
+        // CRITICAL: Double-counting fix. Only match the current version of a plan.
+        if !plan.is_current { return false; }
+
         // 1. State Filter
-        if let Some(sel_states) = filters["states"].as_array() {
-            if !sel_states.is_empty() {
-                let states: HashSet<String> = sel_states.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                if !states.contains(&county.state_code) { return false; }
+        if exclude_dim != Some("states") {
+            if let Some(sel_states) = filters["states"].as_array() {
+                if !sel_states.is_empty() {
+                    let states: HashSet<String> = sel_states.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    if !states.contains(&county.state_code) { return false; }
+                }
             }
         }
 
         // 2. County Filter
-        if let Some(sel_counties) = filters["counties"].as_array() {
-            if !sel_counties.is_empty() {
-                let counties: HashSet<String> = sel_counties.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                if !counties.contains(&county.county_name) { return false; }
+        if exclude_dim != Some("counties") {
+            if let Some(sel_counties) = filters["counties"].as_array() {
+                if !sel_counties.is_empty() {
+                    let counties: HashSet<String> = sel_counties.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    if !counties.contains(&county.county_name) { return false; }
+                }
             }
         }
 
         // 3. Parent Org Filter
-        if let Some(sel_orgs) = filters["parentOrgs"].as_array() {
-            if !sel_orgs.is_empty() {
-                let orgs: HashSet<String> = sel_orgs.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                if !orgs.contains(&plan.parent_org) { return false; }
+        if exclude_dim != Some("parentOrgs") {
+            if let Some(sel_orgs) = filters["parentOrgs"].as_array() {
+                if !sel_orgs.is_empty() {
+                    let orgs: HashSet<String> = sel_orgs.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    if !orgs.contains(&plan.parent_org) { return false; }
+                }
             }
         }
 
         // 4. Contract Filter
-        if let Some(sel_contracts) = filters["contracts"].as_array() {
-            if !sel_contracts.is_empty() {
-                let contracts: HashSet<String> = sel_contracts.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                if !contracts.contains(&plan.contract_id) { return false; }
+        if exclude_dim != Some("contracts") {
+            if let Some(sel_contracts) = filters["contracts"].as_array() {
+                if !sel_contracts.is_empty() {
+                    let contracts: HashSet<String> = sel_contracts.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    if !contracts.contains(&plan.contract_id) { return false; }
+                }
             }
         }
 
         // 5. Plan Type Filter
-        if let Some(sel_types) = filters["planTypes"].as_array() {
-            if !sel_types.is_empty() {
-                let types: HashSet<String> = sel_types.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                if !types.contains(&plan.plan_type) { return false; }
+        if exclude_dim != Some("planTypes") {
+            if let Some(sel_types) = filters["planTypes"].as_array() {
+                if !sel_types.is_empty() {
+                    let types: HashSet<String> = sel_types.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    if !types.contains(&plan.plan_type) { return false; }
+                }
             }
         }
 
@@ -166,7 +177,6 @@ impl QueryEngine {
         let mut pos = 0;
         let start_year = (series.start_month_key / 100) as i32;
         let start_month = (series.start_month_key % 100) as i32;
-
         for i in 0..64 {
             if (bitmap >> i) & 1 != 0 {
                 let curr_month_total = start_month - 1 + i as i32;
@@ -237,14 +247,28 @@ impl QueryEngine {
                 let plan = plan_lookup.get(&series.plan_key);
 
                 if let (Some(c), Some(p)) = (county, plan) {
-                    // Check if this series matches all filters *except* the dimension itself (classic BI cross-filtering)
-                    // For simplicity in MVP, we'll just check if it matches current global filters
-                    if self.matches_filters(series, current_filters) {
+                    // States Filter Options
+                    if self.matches_filters(series, current_filters, Some("states")) {
                         *states.entry(c.state_code.clone()).or_insert(0) += 1;
+                    }
+                    // Counties Filter Options
+                    if self.matches_filters(series, current_filters, Some("counties")) {
                         *counties.entry(c.county_name.clone()).or_insert(0) += 1;
+                    }
+                    // Orgs Filter Options
+                    if self.matches_filters(series, current_filters, Some("parentOrgs")) {
                         *parent_orgs.entry(p.parent_org.clone()).or_insert(0) += 1;
+                    }
+                    // Contracts Filter Options
+                    if self.matches_filters(series, current_filters, Some("contracts")) {
                         *contracts.entry(p.contract_id.clone()).or_insert(0) += 1;
+                    }
+                    // Plans Filter Options
+                    if self.matches_filters(series, current_filters, Some("plans")) {
                         *plans.entry(format!("{} - {}", p.plan_id, p.plan_name)).or_insert(0) += 1;
+                    }
+                    // Plan Types Filter Options
+                    if self.matches_filters(series, current_filters, Some("planTypes")) {
                         *plan_types.entry(p.plan_type.clone()).or_insert(0) += 1;
                     }
                 }
@@ -273,7 +297,7 @@ impl QueryEngine {
         let mut monthly_totals = HashMap::new();
         let start_yyyymm = start_month.to_yyyymm();
         let end_yyyymm = end_month.to_yyyymm();
-        if let (Some(series_cache), Some(county_lookup)) = (&self.series_cache, &self.county_lookup) {
+        if let (Some(series_cache), _) = (&self.series_cache, &self.county_lookup) {
             if let Some(target_keys) = self.state_to_county_keys.get(state_code) {
                 for series in series_cache.values() {
                     if target_keys.contains(&series.county_key) {
@@ -344,11 +368,10 @@ impl QueryEngine {
         if let (Some(plan_lookup), Some(_), Some(series_cache)) = 
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
-                if self.matches_filters(series, current_filters) {
+                if self.matches_filters(series, current_filters, None) {
                     if let Some(val) = series.get_enrollment(self.latest_yyyymm) {
                         total_enrollment += val as u64;
                     }
-                    // For plan count, only count if it has data in the latest month
                     if series.get_enrollment(self.latest_yyyymm).is_some() {
                         unique_plans.insert(series.plan_key);
                         unique_counties.insert(series.county_key);
@@ -371,7 +394,7 @@ impl QueryEngine {
         let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
         if let Some(series_cache) = &self.series_cache {
             for series in series_cache.values() {
-                if self.matches_filters(series, current_filters) {
+                if self.matches_filters(series, current_filters, None) {
                     let bitmap = series.presence_bitmap;
                     let mut pos = 0;
                     let start_year = (series.start_month_key / 100) as i32;
@@ -403,7 +426,7 @@ impl QueryEngine {
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = 
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
-                if self.matches_filters(series, filters) {
+                if self.matches_filters(series, filters, None) {
                     let county = county_lookup.get(&series.county_key).expect("County must exist");
                     let agg_key = match grain {
                         "parentOrg" => plan_lookup.get(&series.plan_key).map(|p| p.parent_org.clone()).unwrap_or_else(|| "Unknown".to_string()),
@@ -438,13 +461,13 @@ impl QueryEngine {
         if let (Some(plan_lookup), Some(_), Some(series_cache)) = 
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
-                if self.matches_filters(series, filters) {
+                if self.matches_filters(series, filters, None) {
                     if let Some(p) = plan_lookup.get(&series.plan_key) {
                         let latest_val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0) as u64;
                         let entry = org_data.entry(p.parent_org.clone()).or_insert((0, HashMap::new()));
                         entry.0 += latest_val;
                         total_market_enrollment += latest_val;
-                        let mut bitmap = series.presence_bitmap;
+                        let bitmap = series.presence_bitmap;
                         let mut pos = 0;
                         let start_year = (series.start_month_key / 100) as i32;
                         let start_month = (series.start_month_key % 100) as i32;
@@ -483,7 +506,7 @@ impl QueryEngine {
         let mut county_data: HashMap<String, u64> = HashMap::new(); 
         if let (Some(county_lookup), Some(series_cache)) = (&self.county_lookup, &self.series_cache) {
             for series in series_cache.values() {
-                if self.matches_filters(series, filters) {
+                if self.matches_filters(series, filters, None) {
                     let county = county_lookup.get(&series.county_key).expect("County exist");
                     let val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0) as u64;
                     *state_data.entry(county.state_code.clone()).or_insert(0) += val;
@@ -511,7 +534,7 @@ impl QueryEngine {
             let aep_base = 202412;
             let mut plan_aggregates: HashMap<u32, (u64, u64, u64, u64)> = HashMap::new();
             for series in series_cache.values() {
-                if self.matches_filters(series, filters) {
+                if self.matches_filters(series, filters, None) {
                     let latest_val = series.get_enrollment(self.latest_yyyymm).unwrap_or(0);
                     let prior_val = series.get_enrollment(self.prior_yyyymm).unwrap_or(0);
                     let aep_t_val = series.get_enrollment(aep_target).unwrap_or(0);
