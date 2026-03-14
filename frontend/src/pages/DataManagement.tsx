@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   Download, 
   Trash2, 
@@ -15,11 +15,6 @@ import { twMerge } from 'tailwind-merge';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
-}
-
-interface IngestedMonth {
-  year: number;
-  month: number;
 }
 
 const MONTH_NAMES = [
