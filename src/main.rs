@@ -229,7 +229,12 @@ async fn main() -> anyhow::Result<()> {
                     let start_month: model::YearMonth = from.parse()?;
                     let end_month: model::YearMonth = to.parse()?;
                     
-                    let movers = engine.get_top_movers(state.clone(), start_month, end_month, limit)?;
+                    let filters_json = if let Some(ref s) = state {
+                        serde_json::json!({ "states": [s] })
+                    } else {
+                        serde_json::json!({})
+                    };
+                    let movers = engine.get_top_movers(&filters_json, start_month, end_month, limit)?;
                     println!("Top {} movers from {} to {} {}:", limit, from, to, state.clone().unwrap_or_else(|| "Nationwide".to_string()));
                     println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Change");
                     println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");

@@ -84,15 +84,14 @@ async fn get_global_trend(State(engine): State<Arc<QueryEngine>>, Json(payload):
 
 async fn get_top_movers(State(engine): State<Arc<QueryEngine>>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let start = std::time::Instant::now();
-    let state = payload["state"].as_str().map(|s| s.to_string());
     let from_str = payload["from"].as_str().unwrap_or("2025-01");
     let to_str = payload["to"].as_str().unwrap_or("2025-02");
-    
+
     let from: crate::model::YearMonth = from_str.parse().map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid from month".to_string()))?;
     let to: crate::model::YearMonth = to_str.parse().map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid to month".to_string()))?;
     let limit = payload["limit"].as_u64().unwrap_or(10) as usize;
 
-    let res = match engine.get_top_movers(state, from, to, limit) {
+    let res = match engine.get_top_movers(&payload, from, to, limit) {
         Ok(movers) => Ok(Json(json!(movers))),
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };

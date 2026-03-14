@@ -91,9 +91,42 @@ impl QueryEngine {
     }
 
     fn is_plan_valid_for_month(&self, plan: &PlanDim, yyyymm: u32) -> bool {
-        // Simple range check is performant. 
+        // Simple range check is performant.
         // Logic: Valid if month is >= valid_from AND (no valid_to OR month < valid_to)
         yyyymm >= plan.valid_from_month && (plan.valid_to_month.is_none() || yyyymm < plan.valid_to_month.unwrap())
+    }
+
+    /// Check only plan-level filters (org, contract, plan type, eghp, snp).
+    /// Used in the matching_nks phase where we have a plan but not a county.
+    /// Geo filtering (state, county) is applied separately in the series-iteration phase.
+    fn matches_plan_only_filters(&self, plan: &PlanDim, filters: &serde_json::Value, target_yyyymm: u32) -> bool {
+        if !self.is_plan_valid_for_month(plan, target_yyyymm) { return false; }
+
+        if let Some(sel_orgs) = filters["parentOrgs"].as_array() {
+            if !sel_orgs.is_empty() {
+                let orgs: HashSet<String> = sel_orgs.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                if !orgs.contains(&plan.parent_org) { return false; }
+            }
+        }
+        if let Some(sel_contracts) = filters["contracts"].as_array() {
+            if !sel_contracts.is_empty() {
+                let contracts: HashSet<String> = sel_contracts.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                if !contracts.contains(&plan.contract_id) { return false; }
+            }
+        }
+        if let Some(sel_types) = filters["planTypes"].as_array() {
+            if !sel_types.is_empty() {
+                let types: HashSet<String> = sel_types.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                if !types.contains(&plan.plan_type) { return false; }
+            }
+        }
+        if let Some(eghp) = filters["eghp"].as_bool() {
+            if plan.is_egwp != eghp { return false; }
+        }
+        if let Some(snp) = filters["snp"].as_bool() {
+            if plan.is_snp != snp { return false; }
+        }
+        true
     }
 
     fn matches_filters(&self, series: &PlanCountySeries, filters: &serde_json::Value, target_yyyymm: u32, exclude_dim: Option<&str>) -> bool {
@@ -348,23 +381,50 @@ impl QueryEngine {
         }
     }
 
-    pub fn get_top_movers(&self, state: Option<String>, month_a: YearMonth, month_b: YearMonth, limit: usize) -> Result<Vec<(String, String, String, i32, u32)>> {
+    pub fn get_top_movers(&self, filters: &serde_json::Value, month_a: YearMonth, month_b: YearMonth, limit: usize) -> Result<Vec<(String, String, String, i32, u32)>> {
         let yyyymm_a = month_a.to_yyyymm();
         let yyyymm_b = month_b.to_yyyymm();
-        let mut plan_changes: HashMap<u32, i32> = HashMap::new();
-        let mut plan_prior: HashMap<u32, u32> = HashMap::new();
-        if let (Some(series_cache), _, Some(plan_lookup)) =
+
+        if let (Some(series_cache), Some(county_lookup), Some(plan_lookup)) =
            (&self.series_cache, &self.county_lookup, &self.plan_lookup) {
-            let target_county_keys = state.as_ref().and_then(|s| self.state_to_county_keys.get(s));
-            for series in series_cache.values() {
-                if let Some(keys) = target_county_keys {
-                    if !keys.contains(&series.county_key) { continue; }
+
+            // Phase 1: plan-level filters (org, contract, plan type, eghp, snp)
+            let mut matching_nks = HashSet::new();
+            for plan in plan_lookup.values() {
+                if self.matches_plan_only_filters(plan, filters, yyyymm_b) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
+            }
+
+            // Pre-build geo filter sets for fast lookup
+            let sel_states: HashSet<String> = filters["states"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let sel_counties: HashSet<String> = filters["counties"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+
+            let mut plan_changes: HashMap<u32, i32> = HashMap::new();
+            let mut plan_prior: HashMap<u32, u32> = HashMap::new();
+
+            for series in series_cache.values() {
+                let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
+                let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
+                if !matching_nks.contains(&nk) { continue; }
+
+                // Phase 2: geo filters against real county
+                if !sel_states.is_empty() || !sel_counties.is_empty() {
+                    let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => continue };
+                    if !sel_states.is_empty() && !sel_states.contains(&county.state_code) { continue; }
+                    if !sel_counties.is_empty() && !sel_counties.contains(&county.county_name) { continue; }
+                }
+
                 let val_a = series.get_enrollment(yyyymm_a).unwrap_or(0);
                 let val_b = series.get_enrollment(yyyymm_b).unwrap_or(0);
                 *plan_changes.entry(series.plan_key).or_insert(0) += val_b as i32 - val_a as i32;
                 *plan_prior.entry(series.plan_key).or_insert(0) += val_a;
             }
+
             let mut movers = Vec::new();
             for (plan_key, change) in plan_changes {
                 if change == 0 { continue; }
@@ -392,11 +452,8 @@ impl QueryEngine {
             // 1. Identify matching natural keys at analysis month
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
-                if self.is_plan_valid_for_month(plan, current_yyyymm) {
-                    let dummy = PlanCountySeries { plan_key: plan.plan_key, county_key: 0, start_month_key: 0, presence_bitmap: 0, enrollments: Vec::new() };
-                    if self.matches_filters(&dummy, filters, current_yyyymm, None) {
-                        matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
-                    }
+                if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
 
@@ -444,14 +501,12 @@ impl QueryEngine {
         let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
 
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
-            // 1. Identify which natural keys (CID|PID) match filters at the analysis month
+            // 1. Identify which natural keys (CID|PID) match plan-level filters at the analysis month.
+            //    Geo filtering (state/county) is applied per-series in step 2.
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
-                if self.is_plan_valid_for_month(plan, analysis_yyyymm) {
-                    let dummy = PlanCountySeries { plan_key: plan.plan_key, county_key: 0, start_month_key: 0, presence_bitmap: 0, enrollments: Vec::new() };
-                    if self.matches_filters(&dummy, current_filters, analysis_yyyymm, None) {
-                        matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
-                    }
+                if self.matches_plan_only_filters(plan, current_filters, analysis_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
 
@@ -520,11 +575,8 @@ impl QueryEngine {
             
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
-                if self.is_plan_valid_for_month(plan, current_yyyymm) {
-                    let dummy = PlanCountySeries { plan_key: plan.plan_key, county_key: 0, start_month_key: 0, presence_bitmap: 0, enrollments: Vec::new() };
-                    if self.matches_filters(&dummy, filters, current_yyyymm, None) {
-                        matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
-                    }
+                if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
 
@@ -593,11 +645,8 @@ impl QueryEngine {
             
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
-                if self.is_plan_valid_for_month(plan, current_yyyymm) {
-                    let dummy = PlanCountySeries { plan_key: plan.plan_key, county_key: 0, start_month_key: 0, presence_bitmap: 0, enrollments: Vec::new() };
-                    if self.matches_filters(&dummy, filters, current_yyyymm, None) {
-                        matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
-                    }
+                if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
 
@@ -670,11 +719,8 @@ impl QueryEngine {
             
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
-                if self.is_plan_valid_for_month(plan, current_yyyymm) {
-                    let dummy = PlanCountySeries { plan_key: plan.plan_key, county_key: 0, start_month_key: 0, presence_bitmap: 0, enrollments: Vec::new() };
-                    if self.matches_filters(&dummy, filters, current_yyyymm, None) {
-                        matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
-                    }
+                if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
 
@@ -717,11 +763,8 @@ impl QueryEngine {
 
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
-                if self.is_plan_valid_for_month(plan, current_yyyymm) {
-                    let dummy = PlanCountySeries { plan_key: plan.plan_key, county_key: 0, start_month_key: 0, presence_bitmap: 0, enrollments: Vec::new() };
-                    if self.matches_filters(&dummy, filters, current_yyyymm, None) {
-                        matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
-                    }
+                if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
 
