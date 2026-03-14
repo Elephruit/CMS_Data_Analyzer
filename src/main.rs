@@ -70,11 +70,12 @@ async fn main() -> anyhow::Result<()> {
             println!("Manifest: {} months ingested", manifest.ingested_months.len());
 
             for month in manifest.ingested_months {
-                let series_path = store_dir.join("facts").join(format!("year={}", month.year)).join(format!("enrollment_{}.parquet", month.month));
-                if series_path.exists() {
-                    println!("- {}: Series file exists", month);
+                let year_dir = store_dir.join("facts").join(format!("year={}", month.year));
+                if year_dir.exists() {
+                    let state_count = std::fs::read_dir(year_dir)?.filter(|e| e.as_ref().unwrap().path().is_dir()).count();
+                    println!("- {}: Found {} state partitions", month, state_count);
                 } else {
-                    println!("- {}: Series file MISSING at {}", month, series_path.display());
+                    println!("- {}: Year directory MISSING at {}", month, year_dir.display());
                 }
             }
         }
@@ -93,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
             // 2. County Lookup
             let county_dim_path = store_dir.join("dims").join("county_dim.parquet");
             let counties = storage::parquet_store::load_county_dim(&county_dim_path)?;
+            // Use natural key for the primary lookup file, but QueryEngine will optimize it
             let county_map: std::collections::HashMap<String, model::CountyDim> = counties.into_iter().map(|c| (format!("{}|{}", c.state_code, c.county_name), c)).collect();
             storage::binary_cache::save_county_lookup(&county_map, &cache_dir.join("county_lookup.bin"))?;
             log::info!("Cached {} counties", county_map.len());
@@ -129,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
             let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
             println!("Listing first {} plans:", limit);
             for plan in plans.iter().take(limit) {
-                println!("{}|{}: {} (Key: {})", plan.contract_id, plan.plan_id, plan.plan_name, plan.plan_key);
+                println!("{}|{}: {} (Org: {}, Type: {}, Key: {})", plan.contract_id, plan.plan_id, plan.plan_name, plan.parent_org, plan.plan_type, plan.plan_key);
             }
         }
         Commands::Query { export, query_command } => {
