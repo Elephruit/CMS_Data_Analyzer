@@ -3,12 +3,6 @@ import { FilterDropdown } from './FilterDropdown';
 import { BooleanFilter } from './BooleanFilter';
 import { useFilters } from '../../context/FilterContext';
 import { RotateCcw, CalendarDays } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
 
 interface Option {
   label: string;

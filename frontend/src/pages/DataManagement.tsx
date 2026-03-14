@@ -8,7 +8,7 @@ import {
   CloudDownload,
   Trash
 } from 'lucide-react';
-import { Card, PageHeader } from '../components/ui/Primitives';
+import { PageHeader } from '../components/ui/Primitives';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
