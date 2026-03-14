@@ -11,6 +11,7 @@ import {
   Area
 } from 'recharts';
 import { ArrowUpRight, ArrowDownRight, LayoutDashboard, Building2, Users, MapPin } from 'lucide-react';
+import { formatEnrollment, formatFullEnrollment, formatMonthYear } from '../utils/formatters';
 
 interface DashboardSummary {
   totalEnrollment: number;
@@ -100,7 +101,7 @@ export const Dashboard: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard 
           label="Total Enrollment" 
-          value={summary ? (summary.totalEnrollment / 1000000).toFixed(2) + 'M' : '0'} 
+          value={summary ? formatEnrollment(summary.totalEnrollment) : '0'} 
           change="+1.2% MoM"
           icon={LayoutDashboard}
           loading={loading}
@@ -119,7 +120,7 @@ export const Dashboard: React.FC = () => {
           loading={loading}
         />
         <StatCard 
-          label="Geographies" 
+          label="Counties" 
           value={summary ? summary.countyCount.toLocaleString() : '0'} 
           icon={MapPin}
           loading={loading}
@@ -153,12 +154,14 @@ export const Dashboard: React.FC = () => {
                   axisLine={false} 
                   tickLine={false} 
                   tick={{fill: '#64748b', fontSize: 10}}
-                  tickFormatter={(val) => (val / 1000000).toFixed(1) + 'M'}
+                  tickFormatter={(val) => formatEnrollment(val)}
                 />
                 <Tooltip 
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px' }}
-                  itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
-                  labelStyle={{ color: '#94a3b8', fontSize: '10px', marginBottom: '4px' }}
+                  itemStyle={{ color: '#f1f5f9', fontSize: '12px', fontWeight: 'bold' }}
+                  labelStyle={{ color: '#94a3b8', fontSize: '10px', marginBottom: '4px', textTransform: 'uppercase', fontWeight: 'black', letterSpacing: '0.1em' }}
+                  labelFormatter={(val) => formatMonthYear(val)}
+                  formatter={(val: number) => [formatFullEnrollment(val), 'Enrollment']}
                 />
                 <Area 
                   type="monotone" 
@@ -199,9 +202,7 @@ export const Dashboard: React.FC = () => {
               ))
             )}
           </div>
-          <button className="mt-8 w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-black uppercase tracking-widest rounded-xl border border-slate-700 transition-all shadow-lg">
-            View All Insights
-          </button>
+
         </Card>
       </div>
     </div>

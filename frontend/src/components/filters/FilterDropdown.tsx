@@ -136,41 +136,48 @@ export const FilterDropdown: React.FC<FilterDropdownProps> = ({
             )}
           </div>
           <div className="max-h-80 overflow-y-auto p-1 custom-scrollbar bg-slate-900/20">
-            {loading ? (
-              <div className="py-8 text-center text-xs text-slate-500 italic">Syncing options...</div>
-            ) : filteredOptions.length === 0 ? (
-              <div className="py-8 text-center text-xs text-slate-500 italic">No matches found</div>
+            {filteredOptions.length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-500 italic">
+                {loading ? 'Syncing...' : 'No matches found'}
+              </div>
             ) : (
-              filteredOptions.map((option) => (
-                <button
-                  key={option.value}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    toggleOption(option.value);
-                  }}
-                  className={cn(
-                    "w-full flex items-center justify-between px-3 py-2 rounded-md text-xs transition-colors mb-0.5",
-                    selectedValues.includes(option.value)
-                      ? "bg-sky-500/10 text-sky-400 font-bold"
-                      : "text-slate-400 hover:bg-slate-700/50 hover:text-slate-200"
-                  )}
-                >
-                  <div className="flex items-center gap-2 truncate flex-1">
-                    <div className={cn(
-                      "w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all",
-                      selectedValues.includes(option.value) ? "bg-sky-500 border-sky-500 scale-110" : "border-slate-600"
-                    )}>
-                      {selectedValues.includes(option.value) && <Check className="w-2.5 h-2.5 text-white" />}
-                    </div>
-                    <span className="truncate">{option.label}</span>
+              <>
+                {loading && (
+                  <div className="absolute top-1 right-1 px-2 py-0.5 bg-sky-500/10 rounded text-[8px] font-black text-sky-400 uppercase tracking-widest animate-pulse border border-sky-500/20 z-10">
+                    Syncing
                   </div>
-                  {option.count !== undefined && (
-                    <span className="text-[9px] font-mono text-slate-600 ml-2 bg-slate-800/50 px-1 rounded">
-                      {option.count.toLocaleString()}
-                    </span>
-                  )}
-                </button>
-              ))
+                )}
+                {filteredOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      toggleOption(option.value);
+                    }}
+                    className={cn(
+                      "w-full flex items-center justify-between px-3 py-2 rounded-md text-xs transition-colors mb-0.5",
+                      selectedValues.includes(option.value)
+                        ? "bg-sky-500/10 text-sky-400 font-bold"
+                        : "text-slate-400 hover:bg-slate-700/50 hover:text-slate-200"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 truncate flex-1">
+                      <div className={cn(
+                        "w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all",
+                        selectedValues.includes(option.value) ? "bg-sky-500 border-sky-500 scale-110" : "border-slate-600"
+                      )}>
+                        {selectedValues.includes(option.value) && <Check className="w-2.5 h-2.5 text-white" />}
+                      </div>
+                      <span className="truncate">{option.label}</span>
+                    </div>
+                    {option.count !== undefined && (
+                      <span className="text-[9px] font-mono text-slate-600 ml-2 bg-slate-800/50 px-1 rounded">
+                        {option.count.toLocaleString()}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </>
             )}
           </div>
         </div>

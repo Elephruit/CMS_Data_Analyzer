@@ -100,7 +100,7 @@ export const DataManagement: React.FC = () => {
     <div className="max-w-[1400px] mx-auto space-y-10 pb-24 px-4">
       <PageHeader 
         title="Analytical Store Management" 
-        subtitle="Provision and manage multi-year CMS datasets. High-performance Parquet storage management."
+        subtitle="Manage and provision enrollment data for multi-year analysis. Keep your local store updated with the latest CMS releases."
         action={
           <button 
             onClick={() => {
@@ -164,7 +164,7 @@ export const DataManagement: React.FC = () => {
                     <div 
                       key={monthKey}
                       className={cn(
-                        "group/month p-4 rounded-xl border flex flex-col justify-between h-24 transition-all duration-200",
+                        "group/month p-4 rounded-xl border flex items-center justify-between transition-all duration-200",
                         ingested 
                           ? "bg-sky-500/5 border-sky-500/20 hover:border-sky-500/50" 
                           : future 
@@ -172,39 +172,42 @@ export const DataManagement: React.FC = () => {
                           : "bg-slate-800/20 border-slate-800 hover:border-slate-600"
                       )}
                     >
-                      <div className="flex items-start justify-between">
+                      <div className="flex flex-col gap-1">
                         <span className={cn(
-                          "text-[10px] font-bold uppercase tracking-widest",
+                          "text-xs font-black uppercase tracking-widest",
                           ingested ? "text-sky-400" : "text-slate-500"
                         )}>
                           {name}
                         </span>
-                        {ingested && <CheckCircle2 className="w-3.5 h-3.5 text-sky-500" />}
-                        {future && <Calendar className="w-3.5 h-3.5 text-slate-700" />}
+                        <div className="flex items-center gap-1.5">
+                          {ingested ? (
+                            <span className="text-[9px] font-bold text-sky-500/80 uppercase tracking-tighter flex items-center gap-1">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              Populated
+                            </span>
+                          ) : future ? (
+                            <span className="text-[9px] font-bold text-slate-600 uppercase tracking-tighter flex items-center gap-1">
+                              <Calendar className="w-2.5 h-2.5" />
+                              Locked
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">
+                              Available
+                            </span>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex items-end justify-between">
-                        <div className="flex flex-col">
-                          <span className={cn(
-                            "text-xs font-bold leading-none",
-                            ingested ? "text-white" : "text-slate-500"
-                          )}>
-                            {monthNum.toString().padStart(2, '0')}
-                          </span>
-                          <span className="text-[8px] font-bold text-slate-600 mt-1 uppercase tracking-tighter">
-                            {ingested ? 'Populated' : future ? 'Locked' : 'Available'}
-                          </span>
-                        </div>
-
-                        {!future && (
+                      {!future && (
+                        <div className="flex items-center gap-2">
                           <button 
                             onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
                             disabled={isProcessing}
                             className={cn(
                               "p-2 rounded-lg transition-all",
                               ingested 
-                                ? "bg-slate-800/50 text-slate-400 hover:text-rose-400" 
-                                : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white"
+                                ? "bg-slate-800/50 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10" 
+                                : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white shadow-lg shadow-sky-500/0 hover:shadow-sky-500/20"
                             )}
                           >
                             {isProcessing ? (
@@ -215,8 +218,8 @@ export const DataManagement: React.FC = () => {
                               <Download className="w-3.5 h-3.5" />
                             )}
                           </button>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

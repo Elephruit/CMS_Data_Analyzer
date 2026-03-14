@@ -35,19 +35,6 @@ export const Header: React.FC = () => {
           </div>
         </div>
       </div>
-      
-      <div className="flex items-center gap-3">
-        <button className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
-          <Info className="w-5 h-5" />
-        </button>
-        <button className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors relative">
-          <Bell className="w-5 h-5" />
-          <span className="absolute top-2 right-2 w-2 h-2 bg-sky-500 rounded-full border-2 border-slate-900"></span>
-        </button>
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white ml-2 cursor-pointer shadow-lg shadow-sky-500/20">
-          JD
-        </div>
-      </div>
     </header>
   );
 };

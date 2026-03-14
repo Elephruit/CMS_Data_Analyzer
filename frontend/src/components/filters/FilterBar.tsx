@@ -31,6 +31,7 @@ export const FilterBar: React.FC = () => {
     planTypes: [],
   });
   const [loading, setLoading] = useState(false);
+  const debounceTimerRef = React.useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const fetchOptions = async () => {
@@ -50,7 +51,19 @@ export const FilterBar: React.FC = () => {
       }
     };
 
-    fetchOptions();
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      fetchOptions();
+    }, 400); // 400ms debounce
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
   }, [filters.analysisMonth, filters.states, filters.counties, filters.parentOrgs, filters.contracts, filters.plans, filters.planTypes, filters.eghp, filters.snp]); 
 
   const monthOptions = useMemo(() => {
