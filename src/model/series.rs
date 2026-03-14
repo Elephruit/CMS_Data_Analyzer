@@ -4,8 +4,58 @@ use serde::{Deserialize, Serialize};
 pub struct PlanCountySeries {
     pub plan_key: u32,
     pub county_key: u32,
-    pub start_month_key: u32, // yyyymm
-    pub month_count: u16,
-    pub presence_bitmap: Vec<u8>,
-    pub enrollment_blob: Vec<u8>, // Compressed enrollment values
+    pub start_month_key: u32, // yyyymm of the first month in the system
+    pub presence_bitmap: u64, // Simple bitmap for up to 64 months for now
+    pub enrollments: Vec<u32>, // Compact ordered vector of values present in bitmap
+}
+
+impl PlanCountySeries {
+    pub fn add_month(&mut self, month_yyyymm: u32, enrollment: u32) {
+        // Calculate offset from start_month
+        // For simplicity in MVP, we'll assume months are consecutive or handled by bitmap
+        // Real implementation would calculate month index based on a global month dimension.
+        // Let's assume start_month_key is 202501.
+        let start_year = (self.start_month_key / 100) as i32;
+        let start_month = (self.start_month_key % 100) as i32;
+        let curr_year = (month_yyyymm / 100) as i32;
+        let curr_month = (month_yyyymm % 100) as i32;
+        
+        let month_index = ((curr_year - start_year) * 12 + (curr_month - start_month)) as u32;
+        
+        if month_index >= 64 {
+            log::warn!("Month index {} out of range for bitmap", month_index);
+            return;
+        }
+
+        let mask = 1u64 << month_index;
+        if self.presence_bitmap & mask != 0 {
+            // Month already exists, update it
+            // We need to find its position in the enrollments vector
+            let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+            self.enrollments[pos] = enrollment;
+        } else {
+            // New month, insert it
+            let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+            self.enrollments.insert(pos, enrollment);
+            self.presence_bitmap |= mask;
+        }
+    }
+
+    pub fn get_enrollment(&self, month_yyyymm: u32) -> Option<u32> {
+        let start_year = (self.start_month_key / 100) as i32;
+        let start_month = (self.start_month_key % 100) as i32;
+        let curr_year = (month_yyyymm / 100) as i32;
+        let curr_month = (month_yyyymm % 100) as i32;
+        
+        let month_index = ((curr_year - start_year) * 12 + (curr_month - start_month)) as u32;
+        if month_index >= 64 { return None; }
+
+        let mask = 1u64 << month_index;
+        if self.presence_bitmap & mask != 0 {
+            let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+            Some(self.enrollments[pos])
+        } else {
+            None
+        }
+    }
 }
