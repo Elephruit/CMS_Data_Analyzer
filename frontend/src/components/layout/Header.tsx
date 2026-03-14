@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bell, Info, Search as SearchIcon, Database } from 'lucide-react';
+import { Search as SearchIcon, Database } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export const Header: React.FC = () => {

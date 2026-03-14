@@ -31,7 +31,7 @@ export const FilterBar: React.FC = () => {
     planTypes: [],
   });
   const [loading, setLoading] = useState(false);
-  const debounceTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const fetchOptions = async () => {

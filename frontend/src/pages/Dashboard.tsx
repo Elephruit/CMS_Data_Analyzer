@@ -161,7 +161,7 @@ export const Dashboard: React.FC = () => {
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px', fontWeight: 'bold' }}
                   labelStyle={{ color: '#94a3b8', fontSize: '10px', marginBottom: '4px', textTransform: 'uppercase', fontWeight: 'black', letterSpacing: '0.1em' }}
                   labelFormatter={(val) => formatMonthYear(val)}
-                  formatter={(val: number) => [formatFullEnrollment(val), 'Enrollment']}
+                  formatter={(val: any) => [val !== undefined ? formatFullEnrollment(val) : '0', 'Enrollment']}
                 />
                 <Area 
                   type="monotone" 
