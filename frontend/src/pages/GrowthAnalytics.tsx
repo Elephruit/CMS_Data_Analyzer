@@ -3,7 +3,15 @@ import { useFilters } from '../context/FilterContext';
 import { Card, PageHeader, StatCard } from '../components/ui/Primitives';
 import { 
   BarChart, 
-...
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  Cell
+} from 'recharts';
+import { TrendingUp, Zap, Sparkles, ArrowUpRight, Download, Info } from 'lucide-react';
 
 interface HighFlyer {
   name: string;
