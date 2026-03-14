@@ -219,4 +219,115 @@ impl QueryEngine {
         result.sort_by_key(|(_, _, _, e)| std::cmp::Reverse(*e));
         Ok(result)
     }
+
+    pub fn get_state_rollup(&self, state_code: &str, start_month: YearMonth, end_month: YearMonth) -> Result<Vec<(u32, u32)>> {
+        let mut monthly_totals = HashMap::new();
+        let start_yyyymm = start_month.to_yyyymm();
+        let end_yyyymm = end_month.to_yyyymm();
+
+        if self.cache_enabled {
+            if let Some(series_cache) = &self.series_cache {
+                if let Some(county_lookup) = &self.county_lookup {
+                    // Filter counties by state
+                    let target_counties: std::collections::HashSet<u32> = county_lookup.values()
+                        .filter(|c| c.state_code.to_lowercase() == state_code.to_lowercase())
+                        .map(|c| c.county_key)
+                        .collect();
+
+                    for series in series_cache.values() {
+                        if target_counties.contains(&series.county_key) {
+                            self.extract_series_range(series, start_yyyymm, end_yyyymm, &mut monthly_totals);
+                        }
+                    }
+                    let mut result: Vec<_> = monthly_totals.into_iter().collect();
+                    result.sort_by_key(|(m, _)| *m);
+                    return Ok(result);
+                }
+            }
+        }
+
+        // Fallback to Parquet if cache missed
+        for year in start_month.year..=end_month.year {
+            let year_state_dir = self.store_dir.join("facts").join(format!("year={}", year)).join(format!("state={}", state_code.to_uppercase()));
+            if year_state_dir.exists() {
+                let series_path = year_state_dir.join("plan_county_series.parquet");
+                let series_list = storage::parquet_store::load_series_partition(&series_path)?;
+                for series in series_list {
+                    self.extract_series_range(&series, start_yyyymm, end_yyyymm, &mut monthly_totals);
+                }
+            }
+        }
+
+        let mut result: Vec<_> = monthly_totals.into_iter().collect();
+        result.sort_by_key(|(m, _)| *m);
+        Ok(result)
+    }
+
+    fn extract_series_range(&self, series: &PlanCountySeries, start: u32, end: u32, totals: &mut HashMap<u32, u32>) {
+        let bitmap = series.presence_bitmap;
+        let mut pos = 0;
+        let start_year = (series.start_month_key / 100) as i32;
+        let start_month = (series.start_month_key % 100) as i32;
+
+        for i in 0..64 {
+            if (bitmap >> i) & 1 != 0 {
+                let curr_month_total = start_month - 1 + i as i32;
+                let year = start_year + curr_month_total / 12;
+                let month = (curr_month_total % 12) + 1;
+                let yyyymm = (year as u32) * 100 + (month as u32);
+                
+                if yyyymm >= start && yyyymm <= end {
+                    let enrollment = series.enrollments[pos];
+                    *totals.entry(yyyymm).or_insert(0) += enrollment;
+                }
+                pos += 1;
+            }
+        }
+    }
+
+    pub fn get_top_movers(&self, state: Option<String>, month_a: YearMonth, month_b: YearMonth, limit: usize) -> Result<Vec<(String, String, String, i32)>> {
+        let yyyymm_a = month_a.to_yyyymm();
+        let yyyymm_b = month_b.to_yyyymm();
+        
+        let mut plan_changes: HashMap<u32, i32> = HashMap::new();
+
+        if self.cache_enabled {
+            if let Some(series_cache) = &self.series_cache {
+                let county_keys = if let Some(st) = &state {
+                    if let Some(county_lookup) = &self.county_lookup {
+                        Some(county_lookup.values()
+                            .filter(|c| c.state_code.to_lowercase() == st.to_lowercase())
+                            .map(|c| c.county_key)
+                            .collect::<std::collections::HashSet<_>>())
+                    } else { None }
+                } else { None };
+
+                for series in series_cache.values() {
+                    if let Some(target_keys) = &county_keys {
+                        if !target_keys.contains(&series.county_key) { continue; }
+                    }
+
+                    let val_a = series.get_enrollment(yyyymm_a).unwrap_or(0) as i32;
+                    let val_b = series.get_enrollment(yyyymm_b).unwrap_or(0) as i32;
+                    *plan_changes.entry(series.plan_key).or_insert(0) += val_b - val_a;
+                }
+            }
+        } else {
+            return Err(anyhow::anyhow!("Top movers query requires binary cache for performance in this MVP. Run rebuild-cache first."));
+        }
+
+        // Resolve metadata and sort
+        let mut movers = Vec::new();
+        if let Some(plan_lookup) = &self.plan_lookup {
+            for (plan_key, change) in plan_changes {
+                if change == 0 { continue; }
+                if let Some(plan) = plan_lookup.get(&plan_key) {
+                    movers.push((plan.contract_id.clone(), plan.plan_id.clone(), plan.plan_name.clone(), change));
+                }
+            }
+        }
+
+        movers.sort_by_key(|(_, _, _, c)| std::cmp::Reverse(c.abs()));
+        Ok(movers.into_iter().take(limit).collect())
+    }
 }

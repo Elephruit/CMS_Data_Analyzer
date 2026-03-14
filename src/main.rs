@@ -160,6 +160,30 @@ async fn main() -> anyhow::Result<()> {
                         println!("County not found: {}, {}", county, state);
                     }
                 }
+                cli::QueryCommands::StateRollup { state, from, to } => {
+                    log::info!("Querying state rollup: state: {}, from: {}, to: {}", state, from, to);
+                    let start_month: model::YearMonth = from.parse()?;
+                    let end_month: model::YearMonth = to.parse()?;
+                    
+                    let rollup = engine.get_state_rollup(&state, start_month, end_month)?;
+                    println!("Rollup for {}:", state.to_uppercase());
+                    for (month, enrollment) in rollup {
+                        println!("{}: {}", month, enrollment);
+                    }
+                }
+                cli::QueryCommands::TopMovers { state, from, to, limit } => {
+                    log::info!("Querying top movers: state: {:?}, from: {}, to: {}, limit: {}", state, from, to, limit);
+                    let start_month: model::YearMonth = from.parse()?;
+                    let end_month: model::YearMonth = to.parse()?;
+                    
+                    let movers = engine.get_top_movers(state.clone(), start_month, end_month, limit)?;
+                    println!("Top {} movers from {} to {} {}:", limit, from, to, state.unwrap_or_else(|| "Nationwide".to_string()));
+                    println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Change");
+                    println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");
+                    for (cid, pid, name, change) in movers {
+                        println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, change);
+                    }
+                }
             }
         }
     }

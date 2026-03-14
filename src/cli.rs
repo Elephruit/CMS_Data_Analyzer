@@ -72,4 +72,24 @@ pub enum QueryCommands {
         #[arg(short, long)]
         month: String,
     },
+    /// Rollup of a state across a month range
+    StateRollup {
+        #[arg(short, long)]
+        state: String,
+        #[arg(short, long)]
+        from: String,
+        #[arg(short, long)]
+        to: String,
+    },
+    /// Top enrollment movers between two months
+    TopMovers {
+        #[arg(short, long)]
+        state: Option<String>,
+        #[arg(short, long)]
+        from: String,
+        #[arg(short, long)]
+        to: String,
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+    },
 }
