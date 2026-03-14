@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Database, Plus, Trash2, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Database, Plus, Trash2, RefreshCw, CheckCircle2 } from 'lucide-react';
 
 interface IngestedMonth {
   year: number;

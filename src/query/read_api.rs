@@ -425,13 +425,48 @@ impl QueryEngine {
     }
 
     pub fn get_global_trend(&self, current_filters: &serde_json::Value) -> Result<Vec<(u32, u64)>> {
-        let sel_states: Vec<String> = current_filters["states"].as_array()
+        // ... (existing implementation)
+        let mut result: Vec<_> = monthly_totals.into_iter().collect();
+        result.sort_by_key(|(m, _)| *m);
+        Ok(result)
+    }
+
+    pub fn get_explorer_data(&self, payload: &serde_json::Value) -> Result<serde_json::Value> {
+        let grain = payload["grain"].as_str().unwrap_or("parentOrg");
+        let filters = &payload["filters"];
+        
+        let sel_states: Vec<String> = filters["states"].as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
-        
-        let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
+
+        let mut latest_yyyymm = 0;
+        let mut prior_yyyymm = 0;
+
+        // Determine months from series cache
+        if self.cache_enabled {
+            let series_cache = self.series_cache.as_ref().unwrap();
+            let mut all_months: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+            for series in series_cache.values() {
+                let start_year = (series.start_month_key / 100) as i32;
+                let start_month = (series.start_month_key % 100) as i32;
+                for i in 0..64 {
+                    if (series.presence_bitmap >> i) & 1 != 0 {
+                        let curr_month_total = start_month - 1 + i as i32;
+                        let year = start_year + curr_month_total / 12;
+                        let month = (curr_month_total % 12) + 1;
+                        all_months.insert((year as u32) * 100 + (month as u32));
+                    }
+                }
+            }
+            let months_vec: Vec<_> = all_months.into_iter().collect();
+            latest_yyyymm = *months_vec.last().unwrap_or(&0);
+            prior_yyyymm = if months_vec.len() >= 2 { months_vec[months_vec.len() - 2] } else { 0 };
+        }
+
+        let mut aggregates: HashMap<String, (u64, u64)> = HashMap::new(); // Key -> (Latest, Prior)
 
         if self.cache_enabled {
+            let plan_lookup = self.plan_lookup.as_ref().unwrap();
             let county_lookup = self.county_lookup.as_ref().unwrap();
             let series_cache = self.series_cache.as_ref().unwrap();
 
@@ -440,31 +475,56 @@ impl QueryEngine {
                 if let Some(c) = county {
                     let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
                     if state_match {
-                        let bitmap = series.presence_bitmap;
-                        let mut pos = 0;
-                        let start_year = (series.start_month_key / 100) as i32;
-                        let start_month = (series.start_month_key % 100) as i32;
+                        let agg_key = match grain {
+                            "parentOrg" => {
+                                let plan = plan_lookup.get(&series.plan_key);
+                                plan.map(|p| p.plan_name.split_whitespace().next().unwrap_or("Other").to_string())
+                                    .unwrap_or_else(|| "Unknown".to_string())
+                            },
+                            "contract" => {
+                                let plan = plan_lookup.get(&series.plan_key);
+                                plan.map(|p| p.contract_id.clone()).unwrap_or_else(|| "Unknown".to_string())
+                            },
+                            "plan" => {
+                                let plan = plan_lookup.get(&series.plan_key);
+                                plan.map(|p| format!("{}|{}", p.contract_id, p.plan_id)).unwrap_or_else(|| "Unknown".to_string())
+                            },
+                            "county" => format!("{}|{}", c.state_code, c.county_name),
+                            _ => "Unknown".to_string(),
+                        };
 
-                        for i in 0..64 {
-                            if (bitmap >> i) & 1 != 0 {
-                                let curr_month_total = start_month - 1 + i as i32;
-                                let year = start_year + curr_month_total / 12;
-                                let month = (curr_month_total % 12) + 1;
-                                let yyyymm = (year as u32) * 100 + (month as u32);
-                                
-                                if let Some(&enrollment) = series.enrollments.get(pos) {
-                                    *monthly_totals.entry(yyyymm).or_insert(0) += enrollment as u64;
-                                }
-                                pos += 1;
-                            }
-                        }
+                        let latest_val = series.get_enrollment(latest_yyyymm).unwrap_or(0);
+                        let prior_val = series.get_enrollment(prior_yyyymm).unwrap_or(0);
+                        
+                        let entry = aggregates.entry(agg_key).or_insert((0, 0));
+                        entry.0 += latest_val as u64;
+                        entry.1 += prior_val as u64;
                     }
                 }
             }
         }
 
-        let mut result: Vec<_> = monthly_totals.into_iter().collect();
-        result.sort_by_key(|(m, _)| *m);
-        Ok(result)
+        let mut rows = Vec::new();
+        for (name, (latest, prior)) in aggregates {
+            let change = latest as i64 - prior as i64;
+            let pct_change = if prior > 0 { (change as f64 / prior as f64) * 100.0 } else { 0.0 };
+            
+            rows.push(serde_json::json!({
+                "name": name,
+                "current": latest,
+                "prior": prior,
+                "change": change,
+                "percentChange": pct_change,
+            }));
+        }
+
+        rows.sort_by_key(|r| std::cmp::Reverse(r["current"].as_u64().unwrap_or(0)));
+
+        Ok(serde_json::json!({
+            "grain": grain,
+            "latestMonth": latest_yyyymm,
+            "priorMonth": prior_yyyymm,
+            "rows": rows
+        }))
     }
 }

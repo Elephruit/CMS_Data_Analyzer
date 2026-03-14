@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useFilters } from '../context/FilterContext';
 import { 
-  LineChart, 
-  Line, 
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -37,7 +35,7 @@ export const Dashboard: React.FC = () => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [movers, setMovers] = useState<Mover[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
