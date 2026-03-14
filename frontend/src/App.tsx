@@ -5,6 +5,7 @@ import { EnrollmentExplorer } from './pages/EnrollmentExplorer';
 import { OrganizationAnalysis } from './pages/OrganizationAnalysis';
 import { Geography } from './pages/Geography';
 import { GrowthAnalytics } from './pages/GrowthAnalytics';
+import { PlanDetail } from './pages/PlanDetail';
 import { DataManagement } from './pages/DataManagement';
 import { FilterProvider } from './context/FilterContext';
 
@@ -24,7 +25,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/explorer" element={<EnrollmentExplorer />} />
             <Route path="/organizations" element={<OrganizationAnalysis />} />
-            <Route path="/plans" element={<Placeholder title="Plans" />} />
+            <Route path="/plans" element={<PlanDetail />} />
             <Route path="/geography" element={<Geography />} />
             <Route path="/growth" element={<GrowthAnalytics />} />
             <Route path="/data" element={<DataManagement />} />

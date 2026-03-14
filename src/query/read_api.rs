@@ -756,4 +756,72 @@ impl QueryEngine {
             "highFlyers": high_flyers.into_iter().take(20).collect::<Vec<_>>()
         }))
     }
+
+    pub fn get_plan_details(&self, contract_id: &str, plan_id: &str) -> Result<serde_json::Value> {
+        if !self.cache_enabled {
+            return Err(anyhow::anyhow!("Plan details require binary cache enabled."));
+        }
+
+        let plan_lookup = self.plan_lookup.as_ref().unwrap();
+        let county_lookup = self.county_lookup.as_ref().unwrap();
+        let series_cache = self.series_cache.as_ref().unwrap();
+
+        // 1. Find plan metadata
+        let plan = plan_lookup.values().find(|p| p.contract_id == contract_id && p.plan_id == plan_id && p.is_current);
+        let plan = match plan {
+            Some(p) => p,
+            None => return Err(anyhow::anyhow!("Plan not found")),
+        };
+
+        // 2. Find all series for this plan
+        let mut footprint = Vec::new();
+        let mut global_trend: HashMap<u32, u64> = HashMap::new();
+
+        for series in series_cache.values() {
+            if series.plan_key == plan.plan_key {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                if let Some(c) = county {
+                    let latest_val = series.enrollments.last().cloned().unwrap_or(0);
+                    footprint.push(serde_json::json!({
+                        "state": c.state_code,
+                        "county": c.county_name,
+                        "enrollment": latest_val
+                    }));
+
+                    // Add to global trend for this plan
+                    let mut bitmap = series.presence_bitmap;
+                    let mut pos = 0;
+                    let start_year = (series.start_month_key / 100) as i32;
+                    let start_month = (series.start_month_key % 100) as i32;
+                    for i in 0..64 {
+                        if (bitmap >> i) & 1 != 0 {
+                            let curr_month_total = start_month - 1 + i as i32;
+                            let year = start_year + curr_month_total / 12;
+                            let month = (curr_month_total % 12) + 1;
+                            let yyyymm = (year as u32) * 100 + (month as u32);
+                            if let Some(&val) = series.enrollments.get(pos) {
+                                *global_trend.entry(yyyymm).or_insert(0) += val as u64;
+                            }
+                            pos += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        footprint.sort_by_key(|f| std::cmp::Reverse(f["enrollment"].as_u64().unwrap_or(0)));
+        let mut trend_list: Vec<_> = global_trend.into_iter().collect();
+        trend_list.sort_by_key(|(m, _)| *m);
+
+        Ok(serde_json::json!({
+            "metadata": {
+                "name": plan.plan_name,
+                "contract_id": plan.contract_id,
+                "plan_id": plan.plan_id,
+                "org": plan.plan_name.split_whitespace().next().unwrap_or("Other")
+            },
+            "footprint": footprint,
+            "trend": trend_list.into_iter().map(|(m, v)| serde_json::json!({ "month": m, "value": v })).collect::<Vec<_>>()
+        }))
+    }
 }
