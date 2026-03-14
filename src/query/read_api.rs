@@ -626,8 +626,8 @@ impl QueryEngine {
             use rayon::prelude::*;
 
             // 1. Parallel collection of data
-            let series_results: Vec<(u32, i64, i64, u64, u64, u64, u64)> = series_cache.par_values()
-                .filter_map(|series| {
+            let series_results: Vec<(u32, i64, i64, u64, u64, u64, u64)> = series_cache.par_iter()
+                .filter_map(|(_, series)| {
                     // Fast path filter checks
                     let county = county_lookup.get(&series.county_key)?;
                     let plan = plan_lookup.get(&series.plan_key)?;
