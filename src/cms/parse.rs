@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::Read;
 use zip::ZipArchive;
 use std::io::Cursor;

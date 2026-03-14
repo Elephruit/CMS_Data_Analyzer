@@ -10,16 +10,6 @@ pub struct KeyResolver {
 }
 
 impl KeyResolver {
-    pub fn new() -> Self {
-        Self {
-            plans: HashMap::new(),
-            current_plans: HashMap::new(),
-            counties: HashMap::new(),
-            next_plan_key: 1,
-            next_county_key: 1,
-        }
-    }
-
     pub fn from_existing(plans: Vec<PlanDim>, counties: Vec<CountyDim>) -> Self {
         let max_plan_key = plans.iter().map(|p| p.plan_key).max().unwrap_or(0);
         let max_county_key = counties.iter().map(|c| c.county_key).max().unwrap_or(0);

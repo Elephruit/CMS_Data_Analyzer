@@ -1,7 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use arrow::array::{UInt32Array, StringArray, BooleanArray, ArrayRef, AsArray, UInt64Array, ListArray};
 use arrow::buffer::OffsetBuffer;
-use arrow::datatypes::{UInt32Type, Field, DataType, Schema};
+use arrow::datatypes::{UInt32Type, Field, DataType};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use crate::model::{PlanDim, CountyDim, PlanCountySeries};
-use std::io::{Read, Write};
 
 pub fn save_plan_lookup(plans: &HashMap<u32, PlanDim>, path: &Path) -> Result<()> {
     let file = File::create(path)?;

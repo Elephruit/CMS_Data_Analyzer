@@ -10,4 +10,4 @@ pub use plan::PlanDim;
 pub use county::CountyDim;
 pub use series::PlanCountySeries;
 pub use ingest_row::NormalizedRow;
-pub use manifest::{StoreManifest, IngestStats};
+pub use manifest::StoreManifest;

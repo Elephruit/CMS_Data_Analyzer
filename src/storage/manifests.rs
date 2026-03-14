@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::fs::File;
 use std::path::Path;
-use crate::model::{StoreManifest, YearMonth};
+use crate::model::StoreManifest;
 
 pub fn load_manifest(path: &Path) -> Result<StoreManifest> {
     if !path.exists() {

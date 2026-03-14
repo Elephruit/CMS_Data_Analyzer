@@ -87,7 +87,7 @@ pub async fn ingest_month(month: YearMonth, force: bool, store_dir: &Path) -> Re
         std::fs::create_dir_all(&year_state_dir)?;
         let series_path = year_state_dir.join("plan_county_series.parquet");
 
-        let mut existing_series = storage::parquet_store::load_series_partition(&series_path)?;
+        let existing_series = storage::parquet_store::load_series_partition(&series_path)?;
         let mut series_map: HashMap<(u32, u32), PlanCountySeries> = existing_series.into_iter()
             .map(|s| ((s.plan_key, s.county_key), s)).collect();
 

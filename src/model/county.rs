@@ -8,7 +8,4 @@ pub struct CountyDim {
 }
 
 impl CountyDim {
-    pub fn natural_key(&self) -> String {
-        format!("{}|{}", self.state_code, self.county_name)
-    }
 }

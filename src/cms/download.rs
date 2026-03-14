@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
-use crate::util::hashing::compute_sha256;
+use anyhow::Result;
 
 pub async fn download_zip(url: &str) -> Result<Vec<u8>> {
     log::info!("Downloading ZIP from: {}", url);

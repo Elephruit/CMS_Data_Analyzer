@@ -12,7 +12,4 @@ pub struct PlanDim {
 }
 
 impl PlanDim {
-    pub fn natural_key(&self) -> String {
-        format!("{}|{}", self.contract_id, self.plan_id)
-    }
 }

@@ -3,13 +3,12 @@ use axum::{
     Router,
     Json,
 };
-use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use serde_json::{json, Value};
 use std::path::Path;
 
-pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
+pub async fn start_server(port: u16, _store_dir: &Path) -> anyhow::Result<()> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     log::info!("Starting API server on http://{}", addr);
 
@@ -64,7 +63,7 @@ async fn get_global_trend(Json(payload): Json<Value>) -> Result<Json<Value>, (ax
     let engine = crate::query::read_api::QueryEngine::new(store_dir);
     
     match engine.get_global_trend(&payload) {
-        Ok(trend) => Ok(Json(trend)),
+        Ok(trend) => Ok(Json(json!(trend))),
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -97,6 +96,7 @@ async fn get_ingested_months() -> Result<Json<Value>, (axum::http::StatusCode, S
     }
 }
 
+#[axum::debug_handler]
 async fn trigger_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let store_dir = Path::new("store");
     let month_str = payload["month"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing month".to_string()))?;
