@@ -219,7 +219,6 @@ impl QueryEngine {
     }
 
     pub fn get_filter_options(&self, current_filters: &serde_json::Value) -> Result<serde_json::Value> {
-        // Extract current selections
         let sel_states: Vec<String> = current_filters["states"].as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
@@ -327,8 +326,9 @@ impl QueryEngine {
                 let yyyymm = (year as u32) * 100 + (month as u32);
                 
                 if yyyymm >= start && yyyymm <= end {
-                    let enrollment = series.enrollments[pos];
-                    *totals.entry(yyyymm).or_insert(0) += enrollment;
+                    if let Some(&enrollment) = series.enrollments.get(pos) {
+                        *totals.entry(yyyymm).or_insert(0) += enrollment;
+                    }
                 }
                 pos += 1;
             }
@@ -425,7 +425,44 @@ impl QueryEngine {
     }
 
     pub fn get_global_trend(&self, current_filters: &serde_json::Value) -> Result<Vec<(u32, u64)>> {
-        // ... (existing implementation)
+        let sel_states: Vec<String> = current_filters["states"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        
+        let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
+
+        if self.cache_enabled {
+            let county_lookup = self.county_lookup.as_ref().unwrap();
+            let series_cache = self.series_cache.as_ref().unwrap();
+
+            for series in series_cache.values() {
+                let county = county_lookup.values().find(|c| c.county_key == series.county_key);
+                if let Some(c) = county {
+                    let state_match = sel_states.is_empty() || sel_states.contains(&c.state_code);
+                    if state_match {
+                        let bitmap = series.presence_bitmap;
+                        let mut pos = 0;
+                        let start_year = (series.start_month_key / 100) as i32;
+                        let start_month = (series.start_month_key % 100) as i32;
+
+                        for i in 0..64 {
+                            if (bitmap >> i) & 1 != 0 {
+                                let curr_month_total = start_month - 1 + i as i32;
+                                let year = start_year + curr_month_total / 12;
+                                let month = (curr_month_total % 12) + 1;
+                                let yyyymm = (year as u32) * 100 + (month as u32);
+                                
+                                if let Some(&enrollment) = series.enrollments.get(pos) {
+                                    *monthly_totals.entry(yyyymm).or_insert(0) += enrollment as u64;
+                                }
+                                pos += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut result: Vec<_> = monthly_totals.into_iter().collect();
         result.sort_by_key(|(m, _)| *m);
         Ok(result)
@@ -442,7 +479,6 @@ impl QueryEngine {
         let mut latest_yyyymm = 0;
         let mut prior_yyyymm = 0;
 
-        // Determine months from series cache
         if self.cache_enabled {
             let series_cache = self.series_cache.as_ref().unwrap();
             let mut all_months: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
@@ -463,7 +499,7 @@ impl QueryEngine {
             prior_yyyymm = if months_vec.len() >= 2 { months_vec[months_vec.len() - 2] } else { 0 };
         }
 
-        let mut aggregates: HashMap<String, (u64, u64)> = HashMap::new(); // Key -> (Latest, Prior)
+        let mut aggregates: HashMap<String, (u64, u64)> = HashMap::new();
 
         if self.cache_enabled {
             let plan_lookup = self.plan_lookup.as_ref().unwrap();
@@ -533,7 +569,7 @@ impl QueryEngine {
             .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
 
-        let mut org_data: HashMap<String, (u64, HashMap<u32, u64>)> = HashMap::new(); // Org -> (TotalLatest, MonthlyTrend)
+        let mut org_data: HashMap<String, (u64, HashMap<u32, u64>)> = HashMap::new(); 
         let mut total_market_enrollment: u64 = 0;
         let mut latest_yyyymm = 0;
 
@@ -542,7 +578,6 @@ impl QueryEngine {
             let county_lookup = self.county_lookup.as_ref().unwrap();
             let series_cache = self.series_cache.as_ref().unwrap();
 
-            // Find latest month
             for series in series_cache.values() {
                 let start_year = (series.start_month_key / 100) as i32;
                 let start_month = (series.start_month_key % 100) as i32;
@@ -567,8 +602,7 @@ impl QueryEngine {
                             entry.0 += latest_val;
                             total_market_enrollment += latest_val;
 
-                            // Populate trend
-                            let mut bitmap = series.presence_bitmap;
+                            let bitmap = series.presence_bitmap;
                             let mut pos = 0;
                             let start_year = (series.start_month_key / 100) as i32;
                             let start_month = (series.start_month_key % 100) as i32;
@@ -620,13 +654,12 @@ impl QueryEngine {
 
         let mut latest_yyyymm = 0;
         let mut state_data: HashMap<String, u64> = HashMap::new();
-        let mut county_data: HashMap<String, u64> = HashMap::new(); // "STATE|COUNTY" -> enrollment
+        let mut county_data: HashMap<String, u64> = HashMap::new(); 
 
         if self.cache_enabled {
             let county_lookup = self.county_lookup.as_ref().unwrap();
             let series_cache = self.series_cache.as_ref().unwrap();
 
-            // Find latest month
             for series in series_cache.values() {
                 let start_year = (series.start_month_key / 100) as i32;
                 let start_month = (series.start_month_key % 100) as i32;
@@ -693,7 +726,6 @@ impl QueryEngine {
             let county_lookup = self.county_lookup.as_ref().unwrap();
             let series_cache = self.series_cache.as_ref().unwrap();
 
-            // Find latest/prior months
             let mut all_months: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
             for series in series_cache.values() {
                 let start_year = (series.start_month_key / 100) as i32;
@@ -728,7 +760,7 @@ impl QueryEngine {
             }
 
             for (plan_key, (latest, prior)) in plan_aggregates {
-                if latest > 500 { // Only significant plans
+                if latest > 500 { 
                     let change = latest as i64 - prior as i64;
                     let pct = if prior > 0 { (change as f64 / prior as f64) * 100.0 } else { 0.0 };
                     if pct > 5.0 || change > 1000 {
@@ -766,14 +798,12 @@ impl QueryEngine {
         let county_lookup = self.county_lookup.as_ref().unwrap();
         let series_cache = self.series_cache.as_ref().unwrap();
 
-        // 1. Find plan metadata
         let plan = plan_lookup.values().find(|p| p.contract_id == contract_id && p.plan_id == plan_id && p.is_current);
         let plan = match plan {
             Some(p) => p,
             None => return Err(anyhow::anyhow!("Plan not found")),
         };
 
-        // 2. Find all series for this plan
         let mut footprint = Vec::new();
         let mut global_trend: HashMap<u32, u64> = HashMap::new();
 
@@ -788,8 +818,7 @@ impl QueryEngine {
                         "enrollment": latest_val
                     }));
 
-                    // Add to global trend for this plan
-                    let mut bitmap = series.presence_bitmap;
+                    let bitmap = series.presence_bitmap;
                     let mut pos = 0;
                     let start_year = (series.start_month_key / 100) as i32;
                     let start_month = (series.start_month_key % 100) as i32;
