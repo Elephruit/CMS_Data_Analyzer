@@ -36,6 +36,10 @@ anyhow = "1.0"
 # Hashing
 sha2 = "0.10"
 
+# Encoding
+encoding_rs = "0.8"
+encoding_rs_io = "0.1"
+
 # Data structures and parallelism
 hashbrown = "0.15"
 rayon = "1.10"

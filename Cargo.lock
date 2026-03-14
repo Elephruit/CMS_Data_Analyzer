@@ -842,6 +842,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "encoding_rs_io"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cc3c5651fb62ab8aa3103998dade57efdd028544bd300516baa31840c252a83"
+dependencies = [
+ "encoding_rs",
+]
+
+[[package]]
 name = "env_filter"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1671,6 +1680,8 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "encoding_rs",
+ "encoding_rs_io",
  "env_logger",
  "hashbrown 0.15.5",
  "log",

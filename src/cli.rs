@@ -37,6 +37,12 @@ pub enum Commands {
     ValidateStore,
     /// Rebuild the high-speed binary cache
     RebuildCache,
+    /// List some plans from the store
+    ListPlans {
+        /// Number of plans to list
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Query the store
     Query {
         #[command(subcommand)]
@@ -54,7 +60,7 @@ pub enum QueryCommands {
         plan: String,
         #[arg(short, long)]
         state: Option<String>,
-        #[arg(short, long)]
+        #[arg(short = 'y', long)]
         county: Option<String>,
     },
     /// Snapshot of a county for a specific month
