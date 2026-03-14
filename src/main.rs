@@ -127,8 +127,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}|{}: {} (Key: {})", plan.contract_id, plan.plan_id, plan.plan_name, plan.plan_key);
             }
         }
-        Commands::Query { query_command } => {
+        Commands::Query { export, query_command } => {
             let engine = query::read_api::QueryEngine::new(store_dir);
+            let mut results_json = serde_json::Value::Null;
 
             match query_command {
                 cli::QueryCommands::PlanTrend { contract, plan, state, county } => {
@@ -137,25 +138,36 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(plan_key) = engine.get_plan_key(&contract, &plan)? {
                         let trend = engine.get_plan_trend(plan_key)?;
                         println!("Trend for {}|{}:", contract, plan);
-                        for (month, enrollment) in trend {
+                        for (month, enrollment) in &trend {
                             println!("{}: {}", month, enrollment);
                         }
+                        results_json = serde_json::json!({
+                            "contract_id": contract,
+                            "plan_id": plan,
+                            "trend": trend
+                        });
                     } else {
                         println!("Plan not found: {}|{}", contract, plan);
                     }
                 }
                 cli::QueryCommands::CountySnapshot { state, county, month } => {
                     log::info!("Querying county snapshot: state: {}, county: {}, month: {}", state, county, month);
-                    let month: model::YearMonth = month.parse()?;
+                    let ym: model::YearMonth = month.parse()?;
                     
                     if let Some(county_key) = engine.get_county_key(&state, &county)? {
-                        let snapshot = engine.get_county_snapshot(county_key, month)?;
-                        println!("Snapshot for {}, {} in {}:", county, state, month);
+                        let snapshot = engine.get_county_snapshot(county_key, ym)?;
+                        println!("Snapshot for {}, {} in {}:", county, state, ym);
                         println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Enrollment");
                         println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");
-                        for (cid, pid, name, enrollment) in snapshot {
+                        for (cid, pid, name, enrollment) in &snapshot {
                             println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, enrollment);
                         }
+                        results_json = serde_json::json!({
+                            "state": state,
+                            "county": county,
+                            "month": month,
+                            "snapshot": snapshot
+                        });
                     } else {
                         println!("County not found: {}, {}", county, state);
                     }
@@ -167,9 +179,15 @@ async fn main() -> anyhow::Result<()> {
                     
                     let rollup = engine.get_state_rollup(&state, start_month, end_month)?;
                     println!("Rollup for {}:", state.to_uppercase());
-                    for (month, enrollment) in rollup {
+                    for (month, enrollment) in &rollup {
                         println!("{}: {}", month, enrollment);
                     }
+                    results_json = serde_json::json!({
+                        "state": state,
+                        "from": from,
+                        "to": to,
+                        "rollup": rollup
+                    });
                 }
                 cli::QueryCommands::TopMovers { state, from, to, limit } => {
                     log::info!("Querying top movers: state: {:?}, from: {}, to: {}, limit: {}", state, from, to, limit);
@@ -177,12 +195,26 @@ async fn main() -> anyhow::Result<()> {
                     let end_month: model::YearMonth = to.parse()?;
                     
                     let movers = engine.get_top_movers(state.clone(), start_month, end_month, limit)?;
-                    println!("Top {} movers from {} to {} {}:", limit, from, to, state.unwrap_or_else(|| "Nationwide".to_string()));
+                    println!("Top {} movers from {} to {} {}:", limit, from, to, state.clone().unwrap_or_else(|| "Nationwide".to_string()));
                     println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Change");
                     println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");
-                    for (cid, pid, name, change) in movers {
+                    for (cid, pid, name, change) in &movers {
                         println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, change);
                     }
+                    results_json = serde_json::json!({
+                        "state": state,
+                        "from": from,
+                        "to": to,
+                        "movers": movers
+                    });
+                }
+            }
+
+            if let Some(path) = export {
+                if !results_json.is_null() {
+                    let file = std::fs::File::create(&path)?;
+                    serde_json::to_writer_pretty(file, &results_json)?;
+                    log::info!("Exported results to {}", path);
                 }
             }
         }

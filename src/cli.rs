@@ -45,6 +45,9 @@ pub enum Commands {
     },
     /// Query the store
     Query {
+        /// Export results to JSON file
+        #[arg(short, long)]
+        export: Option<String>,
         #[command(subcommand)]
         query_command: QueryCommands,
     },
