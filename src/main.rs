@@ -174,6 +174,50 @@ async fn main() -> anyhow::Result<()> {
                 println!("Series partition files updated: {}", files_updated);
                 println!("Repair complete. Run rebuild-cache to refresh the query cache.");
             }
+
+            // Phase 2: Fix invalid validity windows (valid_to < valid_from).
+            // These arise when the earliest ingested month for a plan ends up as the
+            // canonical plan_key but carries a valid_to that predates its valid_from —
+            // making it invisible to all queries.  Rebuild the validity chain for every
+            // natural_key group by sorting versions and deriving valid_to from the next
+            // version's valid_from.
+            {
+                let plans_v2 = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
+                let invalid_count = plans_v2.iter().filter(|p| {
+                    p.valid_to_month.map_or(false, |vt| vt < p.valid_from_month)
+                }).count();
+                println!("Plans with invalid validity windows: {}", invalid_count);
+
+                if invalid_count > 0 {
+                    let mut by_natural_key: std::collections::HashMap<String, Vec<model::PlanDim>> =
+                        std::collections::HashMap::new();
+                    for p in plans_v2 {
+                        let nk = format!("{}|{}", p.contract_id, p.plan_id);
+                        by_natural_key.entry(nk).or_default().push(p);
+                    }
+
+                    let mut fixed_plans: Vec<model::PlanDim> = Vec::new();
+                    for (_, mut versions) in by_natural_key {
+                        versions.sort_by_key(|p| p.valid_from_month);
+                        let n = versions.len();
+                        for i in 0..n {
+                            versions[i].valid_to_month = if i < n - 1 {
+                                Some(versions[i + 1].valid_from_month)
+                            } else {
+                                None
+                            };
+                            versions[i].is_current = i == n - 1;
+                        }
+                        fixed_plans.extend(versions);
+                    }
+
+                    let fixed_total = fixed_plans.len();
+                    storage::parquet_store::save_plan_dim(&fixed_plans, &plan_dim_path)?;
+                    println!("Validity chain rebuilt for {} plans. Run rebuild-cache to refresh.", fixed_total);
+                } else {
+                    println!("No invalid validity windows found.");
+                }
+            }
         }
         Commands::RebuildCache => {
             log::info!("Rebuilding cache");
