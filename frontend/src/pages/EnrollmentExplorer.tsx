@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useFilters } from '../context/FilterContext';
+import { useOrgDisplay } from '../context/OrgDisplayContext';
 import { 
   BarChart, 
   Bar, 
@@ -43,6 +44,7 @@ interface ExplorerData {
 
 export const EnrollmentExplorer: React.FC = () => {
   const { filters } = useFilters();
+  const { getDisplayName } = useOrgDisplay();
   const [grain, setGrain] = useState<Grain>('parentOrg');
   const [data, setData] = useState<ExplorerData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -131,13 +133,16 @@ export const EnrollmentExplorer: React.FC = () => {
   };
 
   const chartData = useMemo(() => {
-    return filteredAndSortedRows.slice(0, 10).map(row => ({
-      name: row.name.length > 20 ? row.name.substring(0, 20) + '...' : row.name,
-      fullName: row.name,
-      current: row.current,
-      change: row.change
-    }));
-  }, [filteredAndSortedRows]);
+    return filteredAndSortedRows.slice(0, 10).map(row => {
+      const displayName = grain === 'parentOrg' ? getDisplayName(row.name) : row.name;
+      return {
+        name: displayName.length > 20 ? displayName.substring(0, 20) + '...' : displayName,
+        fullName: displayName,
+        current: row.current,
+        change: row.change
+      };
+    });
+  }, [filteredAndSortedRows, grain, getDisplayName]);
 
   const COLORS = ['#0ea5e9', '#38bdf8', '#7dd3fc', '#bae6fd', '#e0f2fe'];
 
@@ -306,7 +311,9 @@ export const EnrollmentExplorer: React.FC = () => {
                 filteredAndSortedRows.map((row, i) => (
                   <tr key={i} className="hover:bg-slate-800/30 transition-colors group">
                     <td className="px-6 py-4">
-                      <div className="text-sm font-bold text-white group-hover:text-sky-400 transition-colors">{row.name}</div>
+                      <div className="text-sm font-bold text-white group-hover:text-sky-400 transition-colors">
+                        {grain === 'parentOrg' ? getDisplayName(row.name) : row.name}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-sm font-mono text-slate-300">
                       {row.current.toLocaleString()}
