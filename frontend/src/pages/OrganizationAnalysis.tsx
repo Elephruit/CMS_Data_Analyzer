@@ -25,7 +25,7 @@ import {
   X,
   RotateCcw,
 } from 'lucide-react';
-import { formatEnrollment } from '../utils/formatters';
+import { formatEnrollment, formatMonthYear } from '../utils/formatters';
 
 // ── Default palette ────────────────────────────────────────────────────────────
 const DEFAULT_COLORS = [
@@ -260,7 +260,7 @@ const SortedLineTooltip: React.FC<ChartTooltipProps> = ({ active, payload, label
   return (
     <div style={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px', padding: '10px 14px', minWidth: 200 }}>
       <div style={{ color: '#94a3b8', fontSize: 10, fontWeight: 900, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
-        {label}
+        {label ? formatMonthYear(label) : ''}
       </div>
       {sorted.map((entry) => (
         <div key={entry.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 4 }}>
