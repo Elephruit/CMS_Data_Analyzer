@@ -1,1 +1,11 @@
 /target
+**/*.rs.bk
+.DS_Store
+
+# Store generated data
+store/cache/*.bin
+store/facts/**/*.parquet
+store/dims/*.parquet
+store/crosswalk/
+store/landscape/
+store/manifests/months.json

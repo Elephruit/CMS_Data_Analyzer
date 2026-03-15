@@ -56,7 +56,11 @@ impl QueryEngine {
                 let start_month = (series.start_month_key % 100) as i32;
                 for i in 0..64 {
                     if (series.presence_bitmap >> i) & 1 != 0 {
-                        all_months.insert((start_year as u32 * 100) + (start_month as u32 + i as u32 - 1));
+                        let curr_month_total = start_month - 1 + i as i32;
+                        let year = start_year + curr_month_total / 12;
+                        let month = (curr_month_total % 12) + 1;
+                        let yyyymm = (year as u32) * 100 + (month as u32);
+                        all_months.insert(yyyymm);
                     }
                 }
             }

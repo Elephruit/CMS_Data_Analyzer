@@ -12,21 +12,26 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use crate::query::read_api::QueryEngine;
+use std::collections::HashMap;
 
 pub async fn start_server(engine: Arc<QueryEngine>, port: u16) -> anyhow::Result<()> {
+    let query_routes = Router::new()
+        .route("/dashboard-summary", axum::routing::post(get_dashboard_summary))
+        .route("/global-trend", axum::routing::post(get_global_trend))
+        .route("/top-movers", axum::routing::post(get_top_movers))
+        .route("/explorer", axum::routing::post(get_explorer_data))
+        .route("/organization-analysis", axum::routing::post(get_org_analysis))
+        .route("/plan-list", axum::routing::post(get_plan_list))
+        .route("/plan-details", axum::routing::post(get_plan_details))
+        .route("/geo-analysis", axum::routing::post(get_geo_analysis))
+        .route("/filter-options", axum::routing::post(get_filter_options))
+        .route("/growth-analytics", axum::routing::post(get_growth_analytics));
+
     let app = Router::new()
-        .route("/api/dashboard/summary", axum::routing::post(get_dashboard_summary))
-        .route("/api/dashboard/trend", axum::routing::post(get_global_trend))
-        .route("/api/explorer", axum::routing::post(get_explorer_data))
-        .route("/api/organizations", axum::routing::post(get_org_analysis))
-        .route("/api/plans", axum::routing::post(get_plan_list))
-        .route("/api/geography", axum::routing::post(get_geo_analysis))
-        .route("/api/filter-options", axum::routing::post(get_filter_options))
-        .route("/api/growth", axum::routing::post(get_growth_analytics))
+        .nest("/api/query", query_routes)
         .route("/api/crosswalk/analysis", axum::routing::post(get_crosswalk_analysis))
         .route("/api/crosswalk/aep-switching", axum::routing::post(get_aep_switching))
         .route("/api/crosswalk/lineage", get(get_plan_lineage))
-        .route("/api/plans/details", get(get_plan_details))
         
         // Data Management Routes
         .route("/api/data/months", get(get_ingested_months))
@@ -65,6 +70,21 @@ async fn get_global_trend(State(engine): State<Arc<QueryEngine>>, Json(filters):
     match engine.get_global_trend(&filters) {
         Ok(data) => Json(data).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_top_movers(State(engine): State<Arc<QueryEngine>>, Json(filters): Json<Value>) -> impl IntoResponse {
+    let month_a = filters["from"].as_str().and_then(|s| s.parse::<crate::model::YearMonth>().ok());
+    let month_b = filters["to"].as_str().and_then(|s| s.parse::<crate::model::YearMonth>().ok());
+    let limit = filters["limit"].as_u64().unwrap_or(10) as usize;
+
+    if let (Some(a), Some(b)) = (month_a, month_b) {
+        match engine.get_top_movers(&filters, a, b, limit) {
+            Ok(data) => Json(data).into_response(),
+            Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        (axum::http::StatusCode::BAD_REQUEST, "Invalid month range").into_response()
     }
 }
 
@@ -139,17 +159,15 @@ async fn get_plan_lineage(
 
 async fn get_plan_details(
     State(engine): State<Arc<QueryEngine>>,
-    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>
+    Json(payload): Json<Value>
 ) -> impl IntoResponse {
-    let contract_id = params.get("contract_id").map(|s| s.as_str()).unwrap_or("");
-    let plan_id = params.get("plan_id").map(|s| s.as_str()).unwrap_or("");
+    let contract_id = payload["contract_id"].as_str().unwrap_or("");
+    let plan_id = payload["plan_id"].as_str().unwrap_or("");
     match engine.get_plan_details(contract_id, plan_id) {
         Ok(data) => Json(data).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
-
-use std::collections::HashMap;
 
 // Data Management Handlers
 async fn get_ingested_months() -> impl IntoResponse {
