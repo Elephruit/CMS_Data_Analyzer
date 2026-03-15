@@ -8,6 +8,7 @@ import { GrowthAnalytics } from './pages/GrowthAnalytics';
 import { PlanDetail } from './pages/PlanDetail';
 import { DataManagement } from './pages/DataManagement';
 import { FilterProvider } from './context/FilterContext';
+import { OrgDisplayProvider } from './context/OrgDisplayContext';
 
 // Placeholder components for other pages
 const Placeholder = ({ title }: { title: string }) => (
@@ -18,6 +19,7 @@ const Placeholder = ({ title }: { title: string }) => (
 
 function App() {
   return (
+    <OrgDisplayProvider>
     <FilterProvider>
       <Router>
         <AppShell>
@@ -34,6 +36,7 @@ function App() {
         </AppShell>
       </Router>
     </FilterProvider>
+    </OrgDisplayProvider>
   );
 }
 
