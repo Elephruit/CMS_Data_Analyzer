@@ -23,13 +23,15 @@ pub struct LandscapeFileDiscovery {
     pub columns: Vec<String>,
     #[serde(rename = "rowCountEstimate")]
     pub row_count_estimate: Option<usize>,
+    #[serde(rename = "sourceArchive")]
+    pub source_archive: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct LandscapeManifest {
     pub files: Vec<LandscapeFileDiscovery>,
     pub imported_years: Vec<i32>,
-    pub archive_path: Option<String>,
+    pub source_archives: std::collections::HashMap<String, String>, // name -> local_path
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

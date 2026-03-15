@@ -307,17 +307,21 @@ async fn main() -> anyhow::Result<()> {
                 cli::LandscapeCommands::Discover { archive } => {
                     log::info!("Discovering Landscape files in archive: {}", archive);
                     let archive_path = std::path::Path::new(&archive);
-                    let discovered_files = ingest::landscape::process_archive_from_url(&format!("file://{}", archive_path.display()), archive_path.parent().unwrap()).await?;
+                    let (_name, discovered_files) = ingest::landscape::process_archive_from_url(&format!("file://{}", archive_path.display()), archive_path.parent().unwrap()).await?;
                     
                     let landscape_dir = store_dir.join("landscape");
                     std::fs::create_dir_all(&landscape_dir)?;
                     let manifest_path = landscape_dir.join("manifests").join("landscape_manifest.json");
                     std::fs::create_dir_all(manifest_path.parent().unwrap())?;
                     
+                    let mut source_archives = std::collections::HashMap::new();
+                    let archive_name = archive_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    source_archives.insert(archive_name, archive_path.to_string_lossy().to_string());
+
                     let manifest = model::landscape::LandscapeManifest {
                         files: discovered_files,
                         imported_years: Vec::new(),
-                        archive_path: Some(archive_path.to_string_lossy().to_string()),
+                        source_archives,
                     };
                     
                     let file = std::fs::File::create(&manifest_path)?;

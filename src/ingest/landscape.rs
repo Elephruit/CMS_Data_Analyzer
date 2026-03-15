@@ -6,7 +6,10 @@ use zip::ZipArchive;
 use calamine::{open_workbook_auto_from_rs, Reader};
 use crate::model::landscape::{LandscapeFileDiscovery, LandscapeFileType, LandscapeManifest, NormalizedLandscapeRow};
 
-pub async fn process_archive_from_url(url: &str, _raw_dir: &Path) -> Result<Vec<LandscapeFileDiscovery>> {
+pub async fn process_archive_from_url(url: &str, raw_dir: &Path) -> Result<(String, Vec<LandscapeFileDiscovery>)> {
+    let archive_name = url.split('/').last().unwrap_or("unknown.zip").to_string();
+    let local_path = raw_dir.join(&archive_name);
+
     let bytes = if url.starts_with("file://") {
         let path = Path::new(&url[7..]);
         let mut f = File::open(path)?;
@@ -14,30 +17,40 @@ pub async fn process_archive_from_url(url: &str, _raw_dir: &Path) -> Result<Vec<
         f.read_to_end(&mut buffer)?;
         buffer.into()
     } else {
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()?;
+        if local_path.exists() {
+            log::info!("Using cached archive: {}", local_path.display());
+            let mut f = File::open(&local_path)?;
+            let mut buffer = Vec::new();
+            f.read_to_end(&mut buffer)?;
+            buffer.into()
+        } else {
+            let client = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .build()?;
 
-        let response = client.get(url).send().await?;
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to download archive from {}: HTTP {}", url, response.status()));
+            let response = client.get(url).send().await?;
+            if !response.status().is_success() {
+                return Err(anyhow::anyhow!("Failed to download archive from {}: HTTP {}", url, response.status()));
+            }
+
+            let b = response.bytes().await?;
+            std::fs::write(&local_path, &b)?;
+            log::info!("Saved archive to {}", local_path.display());
+            b
         }
-
-        response.bytes().await?
     };
 
     let mut discovered_files = Vec::new();
-    scan_zip_bytes_recursive(&bytes, &mut discovered_files, "")?;
+    scan_zip_bytes_recursive(&bytes, &mut discovered_files, "", &archive_name)?;
 
     // De-duplicate discovered files by (year, file_name, sheet)
-    // Sometimes the same file might appear in multiple archives or nested ZIPs
     discovered_files.sort_by_key(|f| (f.year, f.file_name.clone(), f.sheet.clone()));
     discovered_files.dedup_by_key(|f| (f.year, f.file_name.clone(), f.sheet.clone()));
 
-    Ok(discovered_files)
+    Ok((archive_name, discovered_files))
 }
 
-fn scan_zip_bytes_recursive(bytes: &[u8], discovered: &mut Vec<LandscapeFileDiscovery>, parent_path: &str) -> Result<()> {
+fn scan_zip_bytes_recursive(bytes: &[u8], discovered: &mut Vec<LandscapeFileDiscovery>, parent_path: &str, source_archive: &str) -> Result<()> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = match ZipArchive::new(cursor) {
         Ok(a) => a,
@@ -63,11 +76,11 @@ fn scan_zip_bytes_recursive(bytes: &[u8], discovered: &mut Vec<LandscapeFileDisc
                 let mut nested_content = Vec::new();
                 zip_file.read_to_end(&mut nested_content)?;
                 log::info!("Diving into nested ZIP: {}", full_name);
-                scan_zip_bytes_recursive(&nested_content, discovered, &full_name)?;
+                scan_zip_bytes_recursive(&nested_content, discovered, &full_name, source_archive)?;
             }
             "csv" | "xlsx" | "xlsm" | "xlsb" | "xls" => {
                 log::debug!("Evaluating candidate file: {}", full_name);
-                match process_zip_entry(&mut zip_file, &full_name) {
+                match process_zip_entry(&mut zip_file, &full_name, source_archive) {
                     Ok(Some(disc)) => {
                         if disc.year > 0 {
                             log::info!("Discovered Landscape for year {}: {}", disc.year, full_name);
@@ -87,7 +100,7 @@ fn scan_zip_bytes_recursive(bytes: &[u8], discovered: &mut Vec<LandscapeFileDisc
     Ok(())
 }
 
-fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str) -> Result<Option<LandscapeFileDiscovery>> {
+fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str, source_archive: &str) -> Result<Option<LandscapeFileDiscovery>> {
     let extension = Path::new(full_name).extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
     
     match extension.as_str() {
@@ -108,6 +121,7 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str) -> Result<O
                 file_type: LandscapeFileType::Csv,
                 columns: headers,
                 row_count_estimate: None,
+                source_archive: source_archive.to_string(),
             }))
         }
         "xlsx" | "xlsm" | "xlsb" | "xls" => {
@@ -125,7 +139,7 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str) -> Result<O
                 return Ok(None);
             }
 
-            // Heuristic: prefer sheets with "MA-PD" or "Landscape" or "Enrollment" or "Plan" or just the first one
+            // Heuristic: prefer sheets with "MA-PD" or "Landscape" or "Enrollment" or "Plan" or "Premium" or just the first one
             let sheet_name = sheet_names.iter()
                 .find(|s| {
                     let s_up = s.to_uppercase();
@@ -152,6 +166,7 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str) -> Result<O
                     file_type,
                     columns: headers,
                     row_count_estimate: Some(range.height()),
+                    source_archive: source_archive.to_string(),
                 }))
             } else {
                 Ok(None)
@@ -186,18 +201,21 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
         return Err(anyhow::anyhow!("No files found for year {} in manifest.", year));
     }
 
-    let archive_path_str = manifest.archive_path.as_ref().ok_or_else(|| anyhow::anyhow!("Archive path missing from manifest"))?;
-    let archive_path = Path::new(archive_path_str);
-    if !archive_path.exists() {
-        return Err(anyhow::anyhow!("Archive not found at {}", archive_path_str));
-    }
-
     log::info!("Ingesting {} files for Landscape year {}", files_to_process.len(), year);
     
     let mut normalized_rows = Vec::new();
     let import_batch_id = uuid::Uuid::new_v4().to_string();
 
     for f in files_to_process {
+        // Find archive local path from source_archives map
+        let archive_local_path_str = manifest.source_archives.get(&f.source_archive)
+            .ok_or_else(|| anyhow::anyhow!("Source archive {} not found in manifest", f.source_archive))?;
+        
+        let archive_path = Path::new(archive_local_path_str);
+        if !archive_path.exists() {
+            return Err(anyhow::anyhow!("Source archive not found at {}", archive_local_path_str));
+        }
+
         let content = match get_recursive_file_content(archive_path, &f.file_name) {
             Ok(c) => c,
             Err(e) => {

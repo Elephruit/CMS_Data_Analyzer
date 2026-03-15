@@ -396,12 +396,17 @@ async fn trigger_landscape_discovery() -> Result<Json<Value>, (axum::http::Statu
     std::fs::create_dir_all(&raw_dir).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut all_files = Vec::new();
+    let mut source_archives = std::collections::HashMap::new();
 
     // 1. Process Standalone ZIP (e.g. CY2026)
     if let Some(standalone_url) = discovery.standalone_zip_url {
         log::info!("Fetching standalone Landscape ZIP: {}", standalone_url);
         match crate::ingest::landscape::process_archive_from_url(&standalone_url, &raw_dir).await {
-            Ok(mut files) => all_files.append(&mut files),
+            Ok((name, mut files)) => {
+                let local_path = raw_dir.join(&name);
+                source_archives.insert(name, local_path.to_string_lossy().to_string());
+                all_files.append(&mut files);
+            },
             Err(e) => log::warn!("Failed to process standalone ZIP {}: {}", standalone_url, e),
         }
     }
@@ -410,7 +415,11 @@ async fn trigger_landscape_discovery() -> Result<Json<Value>, (axum::http::Statu
     if let Some(historical_url) = discovery.historical_archive_url {
         log::info!("Fetching historical Landscape archive: {}", historical_url);
         match crate::ingest::landscape::process_archive_from_url(&historical_url, &raw_dir).await {
-            Ok(mut files) => all_files.append(&mut files),
+            Ok((name, mut files)) => {
+                let local_path = raw_dir.join(&name);
+                source_archives.insert(name, local_path.to_string_lossy().to_string());
+                all_files.append(&mut files);
+            },
             Err(e) => log::warn!("Failed to process historical archive {}: {}", historical_url, e),
         }
     }
@@ -431,8 +440,7 @@ async fn trigger_landscape_discovery() -> Result<Json<Value>, (axum::http::Statu
     };
 
     manifest.files = all_files;
-    // Note: archive_path in manifest might need adjustment if we want to store multiple source archives, 
-    // but for now we'll just store the raw files locally and point there if needed.
+    manifest.source_archives = source_archives;
     
     let file = std::fs::File::create(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     serde_json::to_writer_pretty(file, &manifest).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
