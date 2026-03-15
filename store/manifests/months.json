@@ -1,0 +1,81 @@
+{
+  "ingested_months": [
+    {
+      "year": 2024,
+      "month": 12
+    },
+    {
+      "year": 2025,
+      "month": 1
+    },
+    {
+      "year": 2025,
+      "month": 2
+    },
+    {
+      "year": 2025,
+      "month": 4
+    },
+    {
+      "year": 2025,
+      "month": 5
+    },
+    {
+      "year": 2025,
+      "month": 6
+    },
+    {
+      "year": 2025,
+      "month": 7
+    },
+    {
+      "year": 2025,
+      "month": 8
+    },
+    {
+      "year": 2025,
+      "month": 9
+    },
+    {
+      "year": 2025,
+      "month": 10
+    },
+    {
+      "year": 2025,
+      "month": 11
+    },
+    {
+      "year": 2025,
+      "month": 12
+    },
+    {
+      "year": 2026,
+      "month": 1
+    },
+    {
+      "year": 2026,
+      "month": 2
+    },
+    {
+      "year": 2026,
+      "month": 3
+    }
+  ],
+  "source_hashes": {
+    "2025-06": "98f2a78407def5c5e038ce086fde7701ec958db463dbfe8e74d7fa834e1d8a4c",
+    "2024-12": "24230da4f1ea89585855e1d2237ba5c90bb1224b4306eba2d6e4671d86926a8e",
+    "2025-01": "fff970d9176efab0f8dadbd41da29c4b51f8fd97ea2c7dc3a18eafdf545e3e1d",
+    "2025-11": "9e1159792af2327ae83ce36854a1e601d3f01246c2b12dbf70069b1316bd536a",
+    "2025-02": "22075267650e69309738632613ab967875f848692b9226b17b1c1b9b56a55846",
+    "2026-01": "7bd7082bca8359d02b872cc1ccdc6fb58a0eabaf0b9528bd9002289033031188",
+    "2025-04": "88cc5ff4d53f79a67a65139bc3a5d104cb1b320a54cbd564e0bac61896f9a790",
+    "2025-08": "4105da3f98189819e9631d4e19d067fae51dcd4af665c3a1733650aa3a0fcc2d",
+    "2026-02": "88212ec6ebf84ce6de136dbce92d1de24f7774f74dcd6a39b217df930783f062",
+    "2025-05": "e91677a5ad7d2eee86baaaf437105d582c51011578bfe974bfe10a200b87923f",
+    "2025-12": "a365f8f05950175818f884bdbe29ab9a32eedf15954e123841067a9f45a52eaa",
+    "2025-07": "1e9100cd138496dac8601fa01210dfba662f48a9ba26af0cb99f05eff819d306",
+    "2025-09": "c5c756cca360b1522379d84966d82dc10dc01c46bace56084ceda32fb3f66092",
+    "2025-10": "10a102f088c133e22f6cb7ed4b5f3f894162187541ffc3df8ca71258219308bf",
+    "2026-03": "56b76f78c62f2dac04c9317e672d104e94de941d515fa136728db3a55033b740"
+  }
+}
