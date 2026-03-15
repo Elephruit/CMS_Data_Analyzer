@@ -9,8 +9,7 @@ import {
   Trash,
   Settings2,
   FileText,
-  Star,
-  Info
+  Star
 } from 'lucide-react';
 import { PageHeader } from '../components/ui/Primitives';
 import { useFilters } from '../context/FilterContext';
