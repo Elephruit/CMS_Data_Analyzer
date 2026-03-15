@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useFilters } from '../context/FilterContext';
+import { useOrgDisplay } from '../context/OrgDisplayContext';
 import { ArrowUpRight, ArrowDownRight, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -7,7 +8,7 @@ import {
 } from 'recharts';
 import { formatMonthShort, formatEnrollment } from '../utils/formatters';
 
-const TYPE_COLORS = [
+const DEFAULT_COLORS = [
   '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899',
   '#14b8a6', '#f97316', '#6366f1', '#22c55e', '#e11d48',
 ];
@@ -30,11 +31,18 @@ interface PlanListData {
   priorMonth: number;
 }
 
-interface TypeGroup {
+interface TypeSubGroup {
   planType: string;
   totalEnrollment: number;
   totalMomChange: number;
   plans: PlanRow[];
+}
+
+interface OrgGroup {
+  orgName: string;
+  totalEnrollment: number;
+  totalMomChange: number;
+  typeGroups: TypeSubGroup[];
 }
 
 interface TrendPoint {
@@ -42,7 +50,7 @@ interface TrendPoint {
   enrollment: number;
 }
 
-// ── Inline trend chart domain helper ──────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 function niceChartDomain(values: number[]): [number, number] | ['auto', 'auto'] {
   if (values.length === 0) return ['auto', 'auto'];
   const min = Math.min(...values);
@@ -59,12 +67,11 @@ function niceChartDomain(values: number[]): [number, number] | ['auto', 'auto'] 
   ];
 }
 
-// ── MoM badge ─────────────────────────────────────────────────────────────────
 const MomBadge: React.FC<{ change: number; className?: string }> = ({ change, className = '' }) => {
   const isPos = change > 0;
   const isNeg = change < 0;
   return (
-    <span className={`font-mono font-bold flex items-center gap-0.5 ${isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-500'} ${className}`}>
+    <span className={`font-mono font-bold flex items-center gap-0.5 tabular-nums ${isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-500'} ${className}`}>
       {isPos && <ArrowUpRight className="w-3 h-3 shrink-0" />}
       {isNeg && <ArrowDownRight className="w-3 h-3 shrink-0" />}
       {isPos ? '+' : ''}{change.toLocaleString()}
@@ -75,9 +82,11 @@ const MomBadge: React.FC<{ change: number; className?: string }> = ({ change, cl
 // ── Main component ─────────────────────────────────────────────────────────────
 export const PlanDetail: React.FC = () => {
   const { filters } = useFilters();
+  const { getDisplayName, getColor } = useOrgDisplay();
   const [data, setData] = useState<PlanListData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [collapsedTypes, setCollapsedTypes] = useState<Set<string>>(new Set());
+  const [collapsedOrgs, setCollapsedOrgs] = useState<Set<string>>(new Set());
+  const [collapsedTypeKeys, setCollapsedTypeKeys] = useState<Set<string>>(new Set());
   const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
   const [planTrends, setPlanTrends] = useState<Record<string, TrendPoint[]>>({});
   const [trendLoading, setTrendLoading] = useState<string | null>(null);
@@ -103,29 +112,52 @@ export const PlanDetail: React.FC = () => {
     fetchData();
   }, [filters]);
 
-  // Group by plan type, sorted by total enrollment desc
-  const groups = useMemo((): TypeGroup[] => {
+  // Two-level grouping: parent org → plan type → plans
+  const groups = useMemo((): OrgGroup[] => {
     if (!data) return [];
-    const map = new Map<string, PlanRow[]>();
+
+    const orgMap = new Map<string, Map<string, PlanRow[]>>();
     for (const row of data.rows) {
-      const list = map.get(row.planType) ?? [];
-      list.push(row);
-      map.set(row.planType, list);
+      if (!orgMap.has(row.parentOrg)) orgMap.set(row.parentOrg, new Map());
+      const typeMap = orgMap.get(row.parentOrg)!;
+      if (!typeMap.has(row.planType)) typeMap.set(row.planType, []);
+      typeMap.get(row.planType)!.push(row);
     }
-    return Array.from(map.entries())
-      .map(([planType, plans]) => ({
-        planType,
-        totalEnrollment: plans.reduce((s, p) => s + p.enrollment, 0),
-        totalMomChange: plans.reduce((s, p) => s + p.momChange, 0),
-        plans: [...plans].sort((a, b) => b.enrollment - a.enrollment),
-      }))
+
+    return Array.from(orgMap.entries())
+      .map(([orgName, typeMap]) => {
+        const typeGroups: TypeSubGroup[] = Array.from(typeMap.entries())
+          .map(([planType, plans]) => ({
+            planType,
+            totalEnrollment: plans.reduce((s, p) => s + p.enrollment, 0),
+            totalMomChange: plans.reduce((s, p) => s + p.momChange, 0),
+            plans: [...plans].sort((a, b) => b.enrollment - a.enrollment),
+          }))
+          .sort((a, b) => b.totalEnrollment - a.totalEnrollment);
+
+        return {
+          orgName,
+          totalEnrollment: typeGroups.reduce((s, g) => s + g.totalEnrollment, 0),
+          totalMomChange: typeGroups.reduce((s, g) => s + g.totalMomChange, 0),
+          typeGroups,
+        };
+      })
       .sort((a, b) => b.totalEnrollment - a.totalEnrollment);
   }, [data]);
 
-  const toggleType = useCallback((planType: string) => {
-    setCollapsedTypes(prev => {
+  const toggleOrg = useCallback((orgName: string) => {
+    setCollapsedOrgs(prev => {
       const next = new Set(prev);
-      if (next.has(planType)) next.delete(planType); else next.add(planType);
+      if (next.has(orgName)) next.delete(orgName); else next.add(orgName);
+      return next;
+    });
+  }, []);
+
+  const toggleType = useCallback((orgName: string, planType: string) => {
+    const key = `${orgName}||${planType}`;
+    setCollapsedTypeKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
   }, []);
@@ -134,7 +166,7 @@ export const PlanDetail: React.FC = () => {
     const key = `${plan.contractId}|${plan.planId}`;
     if (expandedPlan === key) { setExpandedPlan(null); return; }
     setExpandedPlan(key);
-    if (planTrends[key]) return; // already cached
+    if (planTrends[key]) return;
     setTrendLoading(key);
     try {
       const res = await fetch('http://127.0.0.1:3000/api/query/plan-details', {
@@ -182,169 +214,206 @@ export const PlanDetail: React.FC = () => {
       {/* Summary bar */}
       <div className="flex items-center justify-between text-xs text-slate-500 px-1">
         <span>
-          <span className="text-white font-bold">{data?.rows.length.toLocaleString()}</span> plans across{' '}
-          <span className="text-white font-bold">{groups.length}</span> plan types
+          <span className="text-white font-bold">{data?.rows.length.toLocaleString()}</span> plans ·{' '}
+          <span className="text-white font-bold">{groups.length}</span> organizations
         </span>
         <span className="font-mono">
           {data?.rows.reduce((s, r) => s + r.enrollment, 0).toLocaleString()} total members
         </span>
       </div>
 
-      {/* Type groups */}
-      {groups.map((group, gi) => {
-        const color = TYPE_COLORS[gi % TYPE_COLORS.length];
-        const isCollapsed = collapsedTypes.has(group.planType);
-        return (
-          <div key={group.planType} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      {/* Org groups */}
+      {groups.map((org, oi) => {
+        const orgColor = getColor(org.orgName, DEFAULT_COLORS[oi % DEFAULT_COLORS.length]);
+        const displayOrg = getDisplayName(org.orgName);
+        const isOrgCollapsed = collapsedOrgs.has(org.orgName);
 
-            {/* Type header */}
+        return (
+          <div key={org.orgName} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+
+            {/* ── Org header ── */}
             <button
-              onClick={() => toggleType(group.planType)}
-              className="w-full flex items-center gap-3 px-5 py-3.5 hover:bg-slate-800/50 transition-colors text-left"
+              onClick={() => toggleOrg(org.orgName)}
+              className="w-full flex items-center gap-3 px-5 py-4 hover:bg-slate-800/50 transition-colors text-left"
             >
-              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-              <span className="font-bold text-sm text-white flex-1">{group.planType}</span>
-              <span className="text-[10px] text-slate-600 shrink-0">
-                {group.plans.length} plan{group.plans.length !== 1 ? 's' : ''}
+              <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: orgColor }} />
+              <span className="font-bold text-sm text-white flex-1 truncate">{displayOrg}</span>
+              {displayOrg !== org.orgName && (
+                <span className="text-[10px] text-slate-600 font-mono truncate max-w-[180px] hidden lg:block">
+                  {org.orgName}
+                </span>
+              )}
+              <span className="text-[10px] text-slate-600 shrink-0 ml-2">
+                {org.typeGroups.length} type{org.typeGroups.length !== 1 ? 's' : ''} · {data?.rows.filter(r => r.parentOrg === org.orgName).length} plans
               </span>
-              <span className="text-xs font-mono text-slate-300 shrink-0 ml-2 min-w-[90px] text-right">
-                {group.totalEnrollment.toLocaleString()}
+              <span className="text-xs font-mono text-slate-300 shrink-0 min-w-[90px] text-right">
+                {org.totalEnrollment.toLocaleString()}
               </span>
-              <MomBadge change={group.totalMomChange} className="text-xs shrink-0 min-w-[80px] justify-end" />
-              {isCollapsed
+              <MomBadge change={org.totalMomChange} className="text-xs shrink-0 min-w-[80px] justify-end" />
+              {isOrgCollapsed
                 ? <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
                 : <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />
               }
             </button>
 
-            {/* Plans table */}
-            {!isCollapsed && (
-              <div className="border-t border-slate-800/60">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-slate-800/40">
-                      <th className="pl-10 pr-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-widest">Plan</th>
-                      <th className="px-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-widest">ID</th>
-                      <th className="px-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-widest">Parent Org</th>
-                      <th className="px-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-widest text-right">Enrollment</th>
-                      <th className="px-4 py-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-widest text-right">MoM</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.plans.map((plan) => {
-                      const planKey = `${plan.contractId}|${plan.planId}`;
-                      const isExpanded = expandedPlan === planKey;
-                      const trend = planTrends[planKey];
-                      const isLoadingTrend = trendLoading === planKey;
+            {/* ── Plan type sub-groups ── */}
+            {!isOrgCollapsed && (
+              <div className="border-t border-slate-800/60 divide-y divide-slate-800/40">
+                {org.typeGroups.map((tg) => {
+                  const typeKey = `${org.orgName}||${tg.planType}`;
+                  const isTypeCollapsed = collapsedTypeKeys.has(typeKey);
 
-                      return (
-                        <React.Fragment key={planKey}>
-                          {/* Plan row — clickable */}
-                          <tr
-                            onClick={() => togglePlan(plan)}
-                            className={`border-b border-slate-800/30 cursor-pointer transition-colors group ${isExpanded ? 'bg-slate-800/30' : 'hover:bg-slate-800/20'}`}
-                          >
-                            <td className="pl-10 pr-4 py-3">
-                              <div className="flex items-center gap-2">
-                                {isExpanded
-                                  ? <ChevronDown className="w-3 h-3 text-sky-500 shrink-0" />
-                                  : <ChevronRight className="w-3 h-3 text-slate-600 shrink-0 group-hover:text-slate-400" />
-                                }
-                                <span className={`text-xs font-semibold transition-colors ${isExpanded ? 'text-sky-400' : 'text-slate-200 group-hover:text-white'}`}>
-                                  {plan.planName}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="text-[10px] font-mono text-slate-500">{planKey}</span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="text-[10px] text-slate-500 truncate max-w-[160px] block">{plan.parentOrg}</span>
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <span className="text-xs font-mono font-bold text-slate-300">
-                                {plan.enrollment.toLocaleString()}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <MomBadge change={plan.momChange} className="text-xs justify-end" />
-                            </td>
-                          </tr>
+                  return (
+                    <div key={typeKey}>
 
-                          {/* Expanded trend chart row */}
-                          {isExpanded && (
-                            <tr className="bg-slate-950/60 border-b border-slate-800/30">
-                              <td colSpan={5} className="px-10 py-4">
-                                {isLoadingTrend ? (
-                                  <div className="flex items-center justify-center h-[180px] gap-3">
-                                    <div className="w-5 h-5 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-                                    <span className="text-slate-500 text-xs">Loading trend...</span>
-                                  </div>
-                                ) : trend && trend.length > 0 ? (
-                                  <div>
-                                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">
-                                      Enrollment History — {plan.planName}
-                                    </div>
-                                    <div style={{ height: 180 }}>
-                                      <ResponsiveContainer width="100%" height="100%">
-                                        <AreaChart data={trend} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
-                                          <defs>
-                                            <linearGradient id={`grad-${planKey.replace(/[|]/g, '-')}`} x1="0" y1="0" x2="0" y2="1">
-                                              <stop offset="5%" stopColor={color} stopOpacity={0.2} />
-                                              <stop offset="95%" stopColor={color} stopOpacity={0} />
-                                            </linearGradient>
-                                          </defs>
-                                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                                          <XAxis
-                                            dataKey="month"
-                                            axisLine={false}
-                                            tickLine={false}
-                                            tick={{ fill: '#64748b', fontSize: 9 }}
-                                            dy={8}
-                                            tickFormatter={formatMonthShort}
-                                          />
-                                          <YAxis
-                                            axisLine={false}
-                                            tickLine={false}
-                                            tick={{ fill: '#64748b', fontSize: 9 }}
-                                            tickFormatter={formatEnrollment}
-                                            domain={niceChartDomain(trend.map(t => t.enrollment))}
-                                            width={48}
-                                          />
-                                          <RechartsTooltip
-                                            contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', fontSize: 11 }}
-                                            itemStyle={{ color: '#f1f5f9', fontWeight: 700 }}
-                                            labelStyle={{ color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}
-                                            labelFormatter={(val: any) => formatMonthShort(val)}
-                                            formatter={(v: any) => [Number(v).toLocaleString(), 'Enrollment']}
-                                          />
-                                          <Area
-                                            type="monotone"
-                                            dataKey="enrollment"
-                                            stroke={color}
-                                            strokeWidth={2}
-                                            fill={`url(#grad-${planKey.replace(/[|]/g, '-')})`}
-                                            fillOpacity={1}
-                                            dot={{ fill: color, stroke: '#0f172a', strokeWidth: 2, r: 3 }}
-                                            activeDot={{ r: 5, fill: color, stroke: '#fff', strokeWidth: 2 }}
-                                          />
-                                        </AreaChart>
-                                      </ResponsiveContainer>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center justify-center h-[100px] text-slate-600 text-xs italic">
-                                    No trend data available for this plan.
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      {/* Type header */}
+                      <button
+                        onClick={() => toggleType(org.orgName, tg.planType)}
+                        className="w-full flex items-center gap-3 pl-10 pr-5 py-2.5 hover:bg-slate-800/40 transition-colors text-left"
+                      >
+                        <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-slate-600" />
+                        <span className="text-xs font-bold text-slate-300 flex-1">{tg.planType}</span>
+                        <span className="text-[10px] text-slate-600 shrink-0">
+                          {tg.plans.length} plan{tg.plans.length !== 1 ? 's' : ''}
+                        </span>
+                        <span className="text-xs font-mono text-slate-400 shrink-0 min-w-[90px] text-right">
+                          {tg.totalEnrollment.toLocaleString()}
+                        </span>
+                        <MomBadge change={tg.totalMomChange} className="text-xs shrink-0 min-w-[80px] justify-end" />
+                        {isTypeCollapsed
+                          ? <ChevronRight className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                          : <ChevronDown className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                        }
+                      </button>
+
+                      {/* Plans table */}
+                      {!isTypeCollapsed && (
+                        <div className="border-t border-slate-800/30">
+                          <table className="w-full text-left">
+                            <thead>
+                              <tr className="border-b border-slate-800/30">
+                                <th className="pl-16 pr-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest">Plan</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest">ID</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest text-right">Enrollment</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest text-right">MoM</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tg.plans.map((plan) => {
+                                const planKey = `${plan.contractId}|${plan.planId}`;
+                                const isExpanded = expandedPlan === planKey;
+                                const trend = planTrends[planKey];
+                                const isLoadingTrend = trendLoading === planKey;
+
+                                return (
+                                  <React.Fragment key={planKey}>
+                                    <tr
+                                      onClick={() => togglePlan(plan)}
+                                      className={`border-b border-slate-800/20 cursor-pointer transition-colors group ${isExpanded ? 'bg-slate-800/25' : 'hover:bg-slate-800/15'}`}
+                                    >
+                                      <td className="pl-16 pr-4 py-2.5">
+                                        <div className="flex items-center gap-2">
+                                          {isExpanded
+                                            ? <ChevronDown className="w-3 h-3 text-sky-500 shrink-0" />
+                                            : <ChevronRight className="w-3 h-3 text-slate-700 shrink-0 group-hover:text-slate-500" />
+                                          }
+                                          <span className={`text-xs font-medium transition-colors ${isExpanded ? 'text-sky-400' : 'text-slate-300 group-hover:text-white'}`}>
+                                            {plan.planName}
+                                          </span>
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-2.5">
+                                        <span className="text-[10px] font-mono text-slate-600">{planKey}</span>
+                                      </td>
+                                      <td className="px-4 py-2.5 text-right">
+                                        <span className="text-xs font-mono font-bold text-slate-400">
+                                          {plan.enrollment.toLocaleString()}
+                                        </span>
+                                      </td>
+                                      <td className="px-4 py-2.5 text-right">
+                                        <MomBadge change={plan.momChange} className="text-xs justify-end" />
+                                      </td>
+                                    </tr>
+
+                                    {/* Inline trend chart */}
+                                    {isExpanded && (
+                                      <tr className="bg-slate-950/50 border-b border-slate-800/20">
+                                        <td colSpan={4} className="pl-16 pr-6 py-4">
+                                          {isLoadingTrend ? (
+                                            <div className="flex items-center gap-3 h-[160px] justify-center">
+                                              <div className="w-4 h-4 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+                                              <span className="text-slate-500 text-xs">Loading trend...</span>
+                                            </div>
+                                          ) : trend && trend.length > 0 ? (
+                                            <div>
+                                              <div className="text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-3">
+                                                {plan.planName} · Enrollment History
+                                              </div>
+                                              <div style={{ height: 160 }}>
+                                                <ResponsiveContainer width="100%" height="100%">
+                                                  <AreaChart data={trend} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                                                    <defs>
+                                                      <linearGradient id={`g-${planKey.replace('|', '-')}`} x1="0" y1="0" x2="0" y2="1">
+                                                        <stop offset="5%" stopColor={orgColor} stopOpacity={0.2} />
+                                                        <stop offset="95%" stopColor={orgColor} stopOpacity={0} />
+                                                      </linearGradient>
+                                                    </defs>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                                    <XAxis
+                                                      dataKey="month"
+                                                      axisLine={false}
+                                                      tickLine={false}
+                                                      tick={{ fill: '#475569', fontSize: 9 }}
+                                                      dy={8}
+                                                      tickFormatter={formatMonthShort}
+                                                    />
+                                                    <YAxis
+                                                      axisLine={false}
+                                                      tickLine={false}
+                                                      tick={{ fill: '#475569', fontSize: 9 }}
+                                                      tickFormatter={formatEnrollment}
+                                                      domain={niceChartDomain(trend.map(t => t.enrollment))}
+                                                      width={46}
+                                                    />
+                                                    <RechartsTooltip
+                                                      contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px' }}
+                                                      itemStyle={{ color: '#f1f5f9', fontSize: 11, fontWeight: 700 }}
+                                                      labelStyle={{ color: '#64748b', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                                                      labelFormatter={(val: any) => formatMonthShort(val)}
+                                                      formatter={(v: any) => [Number(v).toLocaleString(), 'Enrollment']}
+                                                    />
+                                                    <Area
+                                                      type="monotone"
+                                                      dataKey="enrollment"
+                                                      stroke={orgColor}
+                                                      strokeWidth={2}
+                                                      fill={`url(#g-${planKey.replace('|', '-')})`}
+                                                      fillOpacity={1}
+                                                      dot={{ fill: orgColor, stroke: '#0f172a', strokeWidth: 2, r: 3 }}
+                                                      activeDot={{ r: 5, fill: orgColor, stroke: '#fff', strokeWidth: 2 }}
+                                                    />
+                                                  </AreaChart>
+                                                </ResponsiveContainer>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="flex items-center justify-center h-[80px] text-slate-700 text-xs italic">
+                                              No trend data available.
+                                            </div>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </React.Fragment>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
