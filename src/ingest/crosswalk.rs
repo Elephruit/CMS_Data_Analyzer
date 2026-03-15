@@ -333,6 +333,7 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
     let import_batch_id = uuid::Uuid::new_v4().to_string();
 
     for f in files_to_process {
+        log::info!("Processing file: {} from archive: {}", f.file_name, f.source_archive);
         let archive_local_path_str = manifest.source_archives.get(&f.source_archive)
             .ok_or_else(|| anyhow::anyhow!("Source archive {} not found in manifest", f.source_archive))?;
         
@@ -347,9 +348,16 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
             f_obj.read_to_end(&mut buf)?;
             buf
         } else {
-            get_recursive_file_content(archive_path, &f.file_name)?
+            match get_recursive_file_content(archive_path, &f.file_name) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to extract {} from {}: {}", f.file_name, archive_local_path_str, e);
+                    continue;
+                }
+            }
         };
 
+        let mut file_rows = 0;
         match f.file_type {
             LandscapeFileType::Csv => {
                 let delimiter = if extension == "txt" { b'\t' } else { b',' };
@@ -371,12 +379,19 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
                     
                     if let Some(normalized) = map_crosswalk_row(&map, year, &f.file_name, f.sheet.as_deref(), &import_batch_id) {
                         normalized_rows.push(normalized);
+                        file_rows += 1;
                     }
                 }
             }
             LandscapeFileType::Xls | LandscapeFileType::Xlsx | LandscapeFileType::Xlsb => {
                 let cursor = std::io::Cursor::new(content);
-                let mut workbook = open_workbook_auto_from_rs(cursor)?;
+                let mut workbook = match open_workbook_auto_from_rs(cursor) {
+                    Ok(wb) => wb,
+                    Err(e) => {
+                        log::error!("Failed to open Excel workbook for {}: {}", f.file_name, e);
+                        continue;
+                    }
+                };
                 
                 let sheet_name = match &f.sheet {
                     Some(s) => s.clone(),
@@ -398,21 +413,25 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
                             
                             if let Some(normalized) = map_crosswalk_row(&map, year, &f.file_name, f.sheet.as_deref(), &import_batch_id) {
                                 normalized_rows.push(normalized);
+                                file_rows += 1;
                             }
                         }
                     }
                 }
             }
         }
+        log::info!("Extracted {} normalized rows from {}", file_rows, f.file_name);
     }
 
     log::info!("Total crosswalk rows normalized for year {}: {}", year, normalized_rows.len());
 
-    if !normalized_rows.is_empty() {
-        let output_path = store_dir.join("crosswalk").join("normalized").join(format!("year={}", year)).join("crosswalk.parquet");
-        crate::storage::parquet_store::save_crosswalk_data(&normalized_rows, &output_path)?;
-        log::info!("Saved normalized Crosswalk data to {}", output_path.display());
+    if normalized_rows.is_empty() {
+        return Err(anyhow::anyhow!("No valid crosswalk rows found for year {}. Mapping may be failing.", year));
     }
+
+    let output_path = store_dir.join("crosswalk").join("normalized").join(format!("year={}", year)).join("crosswalk.parquet");
+    crate::storage::parquet_store::save_crosswalk_data(&normalized_rows, &output_path)?;
+    log::info!("Saved normalized Crosswalk data to {}", output_path.display());
 
     if !manifest.imported_years.contains(&year) {
         manifest.imported_years.push(year);
@@ -433,37 +452,56 @@ fn map_crosswalk_row(
 ) -> Option<NormalizedCrosswalkRow> {
     let find = |keys: &[&str]| {
         for &k in keys {
-            if let Some(v) = row.get(k) { return Some(v.clone()); }
+            if let Some(v) = row.get(k) { 
+                let trimmed = v.trim();
+                if !trimmed.is_empty() { return Some(trimmed.to_string()); }
+            }
             for (rk, rv) in row {
                 let rk_up = rk.to_uppercase();
                 let k_up = k.to_uppercase();
-                if rk_up == k_up { return Some(rv.clone()); }
-                if rk_up.contains(&k_up) { return Some(rv.clone()); }
+                if rk_up == k_up { 
+                    let trimmed = rv.trim();
+                    if !trimmed.is_empty() { return Some(trimmed.to_string()); }
+                }
+                if rk_up.contains(&k_up) { 
+                    let trimmed = rv.trim();
+                    if !trimmed.is_empty() { return Some(trimmed.to_string()); }
+                }
             }
         }
         None
     };
 
-    let prev_contract = find(&["Previous Contract ID", "Contract ID (Previous)", "PREV_CONTRACT_ID", "Contract Number (Previous)", "OLD_CONTRACT_ID"])?;
-    let prev_plan = find(&["Previous Plan ID", "Plan ID (Previous)", "PREV_PLAN_ID", "OLD_PLAN_ID"])?;
+    let prev_contract = find(&["Previous Contract ID", "Contract ID (Previous)", "PREV_CONTRACT_ID", "Contract Number (Previous)", "OLD_CONTRACT_ID", "PRV_CNT_ID"]);
+    let prev_plan = find(&["Previous Plan ID", "Plan ID (Previous)", "PREV_PLAN_ID", "OLD_PLAN_ID", "PRV_PLN_ID"]);
     
-    let curr_contract = find(&["Current Contract ID", "Contract ID (Current)", "CURR_CONTRACT_ID", "Contract Number (Current)", "NEW_CONTRACT_ID"])?;
-    let curr_plan = find(&["Current Plan ID", "Plan ID (Current)", "CURR_PLAN_ID", "NEW_PLAN_ID"])?;
+    let curr_contract = find(&["Current Contract ID", "Contract ID (Current)", "CURR_CONTRACT_ID", "Contract Number (Current)", "NEW_CONTRACT_ID", "CUR_CNT_ID"]);
+    let curr_plan = find(&["Current Plan ID", "Plan ID (Current)", "CURR_PLAN_ID", "NEW_PLAN_ID", "CUR_PLN_ID"]);
 
     let status = find(&["Status", "Crosswalk Status", "CROSSWALK_STATUS"]).unwrap_or_else(|| "Renewal Plan".to_string());
 
+    // Validation: must have at least one side identified
+    if (prev_contract.is_none() || prev_plan.is_none()) && (curr_contract.is_none() || curr_plan.is_none()) {
+        return None;
+    }
+
+    let pc = prev_contract.unwrap_or_default();
+    let pp = prev_plan.unwrap_or_default();
+    let cc = curr_contract.unwrap_or_default();
+    let cp = curr_plan.unwrap_or_default();
+
     let norm = NormalizedCrosswalkRow {
         crosswalk_year: year,
-        previous_contract_id: prev_contract.clone(),
-        previous_plan_id: prev_plan.clone(),
-        previous_plan_key: format!("{}-{}", prev_contract, prev_plan),
-        previous_plan_name: find(&["Previous Plan Name", "Plan Name (Previous)"]),
+        previous_contract_id: pc.clone(),
+        previous_plan_id: pp.clone(),
+        previous_plan_key: if pc.is_empty() { String::new() } else { format!("{}-{}", pc, pp) },
+        previous_plan_name: find(&["Previous Plan Name", "Plan Name (Previous)", "PRV_PLN_NM"]),
         previous_snp_type: find(&["Previous SNP Type"]),
         
-        current_contract_id: curr_contract.clone(),
-        current_plan_id: curr_plan.clone(),
-        current_plan_key: format!("{}-{}", curr_contract, curr_plan),
-        current_plan_name: find(&["Current Plan Name", "Plan Name (Current)"]),
+        current_contract_id: cc.clone(),
+        current_plan_id: cp.clone(),
+        current_plan_key: if cc.is_empty() { String::new() } else { format!("{}-{}", cc, cp) },
+        current_plan_name: find(&["Current Plan Name", "Plan Name (Current)", "CUR_PLN_NM"]),
         
         status,
         source_file: file_name.to_string(),
