@@ -85,7 +85,8 @@ export const Dashboard: React.FC = () => {
     return `${year - 1}-12`;
   })();
 
-  // Context-aware Y-axis domain: buffer ~20% of the data range, rounded to millions
+  // Context-aware Y-axis domain: picks a scale-appropriate "nice" step so
+  // the chart uses most of its vertical space regardless of data magnitude.
   const trendDomain = useMemo((): [number, number] | ['auto', 'auto'] => {
     if (trend.length === 0) return ['auto', 'auto'];
     const values = trend.map(t => t.enrollment);
@@ -93,8 +94,19 @@ export const Dashboard: React.FC = () => {
     const max = Math.max(...values);
     const range = max - min || max * 0.1;
     const buffer = range * 0.2;
-    const lo = Math.max(0, Math.floor((min - buffer) / 1_000_000) * 1_000_000);
-    const hi = Math.ceil((max + buffer) / 1_000_000) * 1_000_000;
+
+    // Pick a "nice" step size scaled to the padded range / ~5 ticks
+    const rawStep = (range + 2 * buffer) / 5;
+    const exp = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const norm = rawStep / exp;
+    const niceStep = norm <= 1 ? exp
+      : norm <= 2 ? 2 * exp
+      : norm <= 2.5 ? 2.5 * exp
+      : norm <= 5 ? 5 * exp
+      : 10 * exp;
+
+    const lo = Math.max(0, Math.floor((min - buffer) / niceStep) * niceStep);
+    const hi = Math.ceil((max + buffer) / niceStep) * niceStep;
     return [lo, hi];
   }, [trend]);
 
