@@ -3,23 +3,18 @@ import {
   Shuffle, 
   ArrowRight, 
   Search, 
-  Filter, 
   Download,
   AlertCircle,
   RefreshCw,
   Plus,
   Trash2,
-  ExternalLink,
-  ChevronRight,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  Users,
   History,
   X,
-  MapPin
+  TrendingUp,
+  TrendingDown,
+  Minus
 } from 'lucide-react';
-import { PageHeader, StatCard, ChartCard, DataTable, Badge } from '../components/ui/Primitives';
+import { PageHeader, StatCard, ChartCard, Badge } from '../components/ui/Primitives';
 import { useFilters } from '../context/FilterContext';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -69,7 +64,6 @@ export const CrosswalkAnalysis: React.FC = () => {
   
   // Lineage State
   const [selectedLineage, setSelectedLineage] = useState<LineageRow[] | null>(null);
-  const [lineageLoading, setLineageLoading] = useState(false);
   const [lineageTarget, setLineageTarget] = useState<string | null>(null);
 
   const fetchData = async () => {
@@ -98,7 +92,6 @@ export const CrosswalkAnalysis: React.FC = () => {
   };
 
   const fetchLineage = async (row: any) => {
-    setLineageLoading(true);
     setLineageTarget(row.current_plan_key);
     try {
       const contractId = row.current_contract_id;
@@ -111,8 +104,6 @@ export const CrosswalkAnalysis: React.FC = () => {
       }
     } catch (e) {
       console.error('Failed to fetch lineage', e);
-    } finally {
-      setLineageLoading(false);
     }
   };
 
@@ -174,37 +165,37 @@ export const CrosswalkAnalysis: React.FC = () => {
         <StatCard 
           title="Total Renewals" 
           value={data?.metrics?.renewals.toLocaleString() || '0'} 
-          icon={<RefreshCw className="w-4 h-4" />}
+          icon={RefreshCw}
           trend={0}
         />
         <StatCard 
           title="Consolidations" 
           value={data?.metrics?.consolidations.toLocaleString() || '0'} 
-          icon={<Minus className="w-4 h-4" />}
+          icon={Minus}
           variant="warning"
         />
         <StatCard 
           title="New Plans" 
           value={data?.metrics?.newPlans.toLocaleString() || '0'} 
-          icon={<Plus className="w-4 h-4" />}
+          icon={Plus}
           variant="success"
         />
         <StatCard 
           title="Terminated" 
           value={data?.metrics?.terminated.toLocaleString() || '0'} 
-          icon={<Trash2 className="w-4 h-4" />}
+          icon={Trash2}
           variant="danger"
         />
         <StatCard 
           title="Expansions (SAE)" 
           value={data?.metrics?.sae.toLocaleString() || '0'} 
-          icon={<TrendingUp className="w-4 h-4" />}
+          icon={TrendingUp}
           variant="success"
         />
         <StatCard 
           title="Reductions (SAR)" 
           value={data?.metrics?.sar.toLocaleString() || '0'} 
-          icon={<TrendingDown className="w-4 h-4" />}
+          icon={TrendingDown}
           variant="warning"
         />
       </div>
@@ -386,7 +377,7 @@ export const CrosswalkAnalysis: React.FC = () => {
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-black text-sky-400 uppercase">{item.current_plan_key}</span>
                           <Badge 
-                            variant={item.status.includes("New") ? 'success' : item.status.includes("Consolidated") ? 'warning' : 'primary'}
+                            variant={item.status.includes("NEW") || item.status.includes("New") ? 'success' : item.status.includes("Consolidated") ? 'warning' : 'primary'}
                             label={item.status}
                           />
                         </div>
