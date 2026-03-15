@@ -37,6 +37,10 @@ pub enum Commands {
     ValidateStore,
     /// Rebuild the high-speed binary cache
     RebuildCache,
+    /// Repair plan dimension: deduplicate plan versions and remap series parquets.
+    /// Run this if months were ingested out of order, which can cause duplicate
+    /// plan_key entries (one per county row) for the same plan+month combination.
+    RepairDim,
     /// Start the web server
     Serve {
         /// Port to listen on

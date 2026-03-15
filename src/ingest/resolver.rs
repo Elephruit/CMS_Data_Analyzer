@@ -4,6 +4,7 @@ use crate::model::{PlanDim, CountyDim, NormalizedRow, YearMonth};
 pub struct KeyResolver {
     pub plans: HashMap<u32, PlanDim>, // Surrogate key -> PlanDim
     pub current_plans: HashMap<String, u32>, // Natural key (CID|PID) -> Current surrogate key
+    pub version_index: HashMap<(String, u32), u32>, // (natural_key, valid_from_month) -> plan_key
     pub counties: HashMap<String, CountyDim>, // Natural key (State|County) -> CountyDim
     pub next_plan_key: u32,
     pub next_county_key: u32,
@@ -16,11 +17,14 @@ impl KeyResolver {
 
         let mut plans_map = HashMap::new();
         let mut current_plans = HashMap::new();
+        let mut version_index = HashMap::new();
         for p in plans {
             let key = p.plan_key;
+            let nk = format!("{}|{}", p.contract_id, p.plan_id);
             if p.is_current {
-                current_plans.insert(format!("{}|{}", p.contract_id, p.plan_id), key);
+                current_plans.insert(nk.clone(), key);
             }
+            version_index.insert((nk, p.valid_from_month), key);
             plans_map.insert(key, p);
         }
 
@@ -29,6 +33,7 @@ impl KeyResolver {
         Self {
             plans: plans_map,
             current_plans,
+            version_index,
             counties: counties_map,
             next_plan_key: max_plan_key + 1,
             next_county_key: max_county_key + 1,
@@ -61,19 +66,22 @@ impl KeyResolver {
             }
 
             // Material change detected: version the record
-            // If the month we are ingesting is LATER than the current version's start, 
+            // If the month we are ingesting is LATER than the current version's start,
             // the current version ends at this month, and we create a new one starting at this month.
             if month_yyyymm > plan.valid_from_month {
                 log::info!("Plan metadata changed for {} at {}. Versioning.", natural_key, month_yyyymm);
                 plan.is_current = false;
                 plan.valid_to_month = Some(month_yyyymm);
             } else {
-                // If the month we are ingesting is EARLIER than current version's start,
-                // we should probably create a version for this earlier period.
-                // For MVP, we'll just log it. This happens if months are ingested out of order.
-                log::warn!("Plan metadata changed for {} at {} (EARLIER than current version {}).", natural_key, month_yyyymm, plan.valid_from_month);
-                // We'll still create a new version, but it won't be "current" if there's already a later one
-                // Actually, let's keep it simple: new version starts at month_yyyymm and ends at plan.valid_from_month
+                // The month being ingested is EARLIER than the current version's start.
+                // This happens when months are ingested out of order (e.g. Dec 2024 ingested
+                // after Jan 2025 when Jan 2025 already changed the plan's metadata).
+                // IMPORTANT: check version_index first to avoid creating one plan_key per county
+                // row — without this guard, each row for the same plan would create a new surrogate key.
+                let prior_version_to = plan.valid_from_month;
+                if let Some(&existing_key) = self.version_index.get(&(natural_key.clone(), month_yyyymm)) {
+                    return existing_key;
+                }
                 let new_key = self.next_plan_key;
                 self.next_plan_key += 1;
                 let new_plan = PlanDim {
@@ -86,10 +94,11 @@ impl KeyResolver {
                     is_egwp: row.is_egwp,
                     is_snp: row.is_snp,
                     valid_from_month: month_yyyymm,
-                    valid_to_month: Some(plan.valid_from_month),
+                    valid_to_month: Some(prior_version_to),
                     is_current: false,
                 };
                 self.plans.insert(new_key, new_plan);
+                self.version_index.insert((natural_key, month_yyyymm), new_key);
                 return new_key;
             }
         }
@@ -112,6 +121,7 @@ impl KeyResolver {
             is_current: true,
         };
         
+        self.version_index.insert((natural_key.clone(), month_yyyymm), plan_key);
         self.plans.insert(plan_key, new_plan);
         self.current_plans.insert(natural_key, plan_key);
         plan_key

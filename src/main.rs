@@ -79,6 +79,102 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::RepairDim => {
+            log::info!("Repairing plan dimension: deduplicating per-month plan versions...");
+
+            let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
+            let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
+            let total_before = plans.len();
+
+            // Group all plan_keys by (natural_key, valid_from_month).
+            // Keep the LOWEST plan_key per group as canonical; the rest are duplicates
+            // created when the same month was processed after a metadata change had
+            // established a later "current" version — causing one new plan_key per row.
+            let mut canonical: std::collections::HashMap<(String, u32), u32> = std::collections::HashMap::new();
+            for p in &plans {
+                let nk = format!("{}|{}", p.contract_id, p.plan_id);
+                let entry = canonical.entry((nk, p.valid_from_month)).or_insert(p.plan_key);
+                if p.plan_key < *entry {
+                    *entry = p.plan_key;
+                }
+            }
+
+            // Build remap: duplicate_plan_key -> canonical_plan_key
+            let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            for p in &plans {
+                let nk = format!("{}|{}", p.contract_id, p.plan_id);
+                let canon = canonical[&(nk, p.valid_from_month)];
+                if p.plan_key != canon {
+                    remap.insert(p.plan_key, canon);
+                }
+            }
+
+            println!("Plans before repair: {}", total_before);
+            println!("Duplicate plan_keys to remove: {}", remap.len());
+
+            if remap.is_empty() {
+                println!("No duplicates found. Plan dimension is clean.");
+            } else {
+                // Rewrite plan_dim without duplicates
+                let clean_plans: Vec<_> = plans.into_iter().filter(|p| !remap.contains_key(&p.plan_key)).collect();
+                storage::parquet_store::save_plan_dim(&clean_plans, &plan_dim_path)?;
+                println!("Plans after repair: {}", clean_plans.len());
+
+                // Remap series parquets: replace duplicate plan_keys with canonical ones
+                let facts_dir = store_dir.join("facts");
+                let mut files_updated = 0usize;
+                if facts_dir.exists() {
+                    for year_entry in std::fs::read_dir(&facts_dir)? {
+                        let year_path = year_entry?.path();
+                        if !year_path.is_dir() { continue; }
+                        for state_entry in std::fs::read_dir(&year_path)? {
+                            let state_path = state_entry?.path();
+                            if !state_path.is_dir() { continue; }
+                            let series_path = state_path.join("plan_county_series.parquet");
+                            let mut series_list = storage::parquet_store::load_series_partition(&series_path)?;
+                            let mut changed = false;
+                            // Remap plan_keys and merge any now-identical (plan_key, county_key) pairs
+                            let mut merged: std::collections::HashMap<(u32, u32), crate::model::PlanCountySeries> = std::collections::HashMap::new();
+                            for mut s in series_list.drain(..) {
+                                if let Some(&canon_key) = remap.get(&s.plan_key) {
+                                    s.plan_key = canon_key;
+                                    changed = true;
+                                }
+                                let key = (s.plan_key, s.county_key);
+                                if let Some(existing) = merged.get_mut(&key) {
+                                    // Merge duplicate (same plan, same county) series
+                                    let bitmap = s.presence_bitmap;
+                                    let start_year = (s.start_month_key / 100) as i32;
+                                    let start_month = (s.start_month_key % 100) as i32;
+                                    let mut pos = 0usize;
+                                    for i in 0..64u32 {
+                                        if (bitmap >> i) & 1 != 0 {
+                                            let curr = start_month - 1 + i as i32;
+                                            let year = start_year + curr / 12;
+                                            let month = curr % 12 + 1;
+                                            let yyyymm = (year as u32) * 100 + month as u32;
+                                            if let Some(&enrollment) = s.enrollments.get(pos) {
+                                                existing.add_month(yyyymm, enrollment);
+                                            }
+                                            pos += 1;
+                                        }
+                                    }
+                                } else {
+                                    merged.insert(key, s);
+                                }
+                            }
+                            if changed {
+                                let updated: Vec<_> = merged.into_values().collect();
+                                storage::parquet_store::save_series_partition(&updated, &series_path)?;
+                                files_updated += 1;
+                            }
+                        }
+                    }
+                }
+                println!("Series partition files updated: {}", files_updated);
+                println!("Repair complete. Run rebuild-cache to refresh the query cache.");
+            }
+        }
         Commands::RebuildCache => {
             log::info!("Rebuilding cache");
             let cache_dir = store_dir.join("cache");
