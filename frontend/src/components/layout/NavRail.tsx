@@ -9,6 +9,7 @@ import {
   Database,
   Download,
   Settings2,
+  Shuffle,
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -23,6 +24,7 @@ const navItems = [
   { icon: Search, label: 'Enrollment Explorer', path: '/explorer' },
   { icon: Building2, label: 'Parent Organizations', path: '/organizations' },
   { icon: FileText, label: 'Plans', path: '/plans' },
+  { icon: Shuffle, label: 'Plan Crosswalk', path: '/crosswalk' },
   { icon: TrendingUp, label: 'Growth & AEP', path: '/growth' },
   { icon: Database, label: 'Data Management', path: '/data' },
   { icon: Download, label: 'Exports', path: '/exports' },

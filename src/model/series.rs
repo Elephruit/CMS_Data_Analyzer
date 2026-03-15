@@ -77,6 +77,23 @@ impl PlanCountySeries {
             None
         }
     }
+
+    pub fn remove_month(&mut self, month_yyyymm: u32) {
+        let start_year = (self.start_month_key / 100) as i32;
+        let start_month = (self.start_month_key % 100) as i32;
+        let curr_year = (month_yyyymm / 100) as i32;
+        let curr_month = (month_yyyymm % 100) as i32;
+        
+        let month_index = ((curr_year - start_year) * 12 + (curr_month - start_month)) as i32;
+        if month_index < 0 || month_index >= 64 { return; }
+
+        let mask = 1u64 << month_index;
+        if self.presence_bitmap & mask != 0 {
+            let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+            self.enrollments.remove(pos);
+            self.presence_bitmap &= !mask;
+        }
+    }
 }
 
 #[cfg(test)]

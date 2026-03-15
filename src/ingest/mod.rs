@@ -141,3 +141,44 @@ pub async fn ingest_month(month: YearMonth, force: bool, store_dir: &Path) -> Re
 
     Ok(())
 }
+
+pub fn delete_month(month: YearMonth, store_dir: &Path) -> Result<()> {
+    let manifest_path = store_dir.join("manifests").join("months.json");
+    let mut manifest = storage::manifests::load_manifest(&manifest_path)?;
+
+    if !manifest.ingested_months.contains(&month) {
+        return Ok(());
+    }
+
+    // 1. Remove from fact partitions
+    let year_dir = store_dir.join("facts").join(format!("year={}", month.year));
+    if year_dir.exists() {
+        let month_yyyymm = month.to_yyyymm();
+        for entry in std::fs::read_dir(year_dir)? {
+            let entry = entry?;
+            if entry.path().is_dir() {
+                let series_path = entry.path().join("plan_county_series.parquet");
+                if series_path.exists() {
+                    let mut series_list = storage::parquet_store::load_series_partition(&series_path)?;
+                    let mut changed = false;
+                    for series in &mut series_list {
+                        if series.get_enrollment(month_yyyymm).is_some() {
+                            series.remove_month(month_yyyymm);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        storage::parquet_store::save_series_partition(&series_list, &series_path)?;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Update Manifest
+    manifest.ingested_months.retain(|m| *m != month);
+    manifest.source_hashes.remove(&month.to_string());
+    storage::manifests::save_manifest(&manifest, &manifest_path)?;
+
+    Ok(())
+}

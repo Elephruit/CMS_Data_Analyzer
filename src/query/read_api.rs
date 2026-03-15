@@ -12,14 +12,16 @@ pub struct QueryEngine {
     pub state_to_county_keys: HashMap<String, HashSet<u32>>,
     pub latest_yyyymm: u32,
     pub prior_yyyymm: u32,
+    pub lineage_engine: crate::query::lineage::LineageEngine,
 }
 
 impl QueryEngine {
     pub fn new(store_dir: &Path) -> Self {
+        let lineage_engine = crate::query::lineage::LineageEngine::new(store_dir);
         let cache_dir = store_dir.join("cache");
         let mut plan_lookup = None;
         let mut county_lookup_raw: Option<HashMap<String, CountyDim>> = None;
-        let mut series_cache = None;
+        let mut series_cache: Option<HashMap<(u32, u32), PlanCountySeries>> = None;
         let mut cache_enabled = false;
 
         if cache_dir.exists() {
@@ -71,6 +73,7 @@ impl QueryEngine {
             state_to_county_keys,
             latest_yyyymm,
             prior_yyyymm,
+            lineage_engine,
         }
     }
 
@@ -91,14 +94,9 @@ impl QueryEngine {
     }
 
     fn is_plan_valid_for_month(&self, plan: &PlanDim, yyyymm: u32) -> bool {
-        // Simple range check is performant.
-        // Logic: Valid if month is >= valid_from AND (no valid_to OR month < valid_to)
         yyyymm >= plan.valid_from_month && (plan.valid_to_month.is_none() || yyyymm < plan.valid_to_month.unwrap())
     }
 
-    /// Check only plan-level filters (org, contract, plan type, eghp, snp).
-    /// Used in the matching_nks phase where we have a plan but not a county.
-    /// Geo filtering (state, county) is applied separately in the series-iteration phase.
     fn matches_plan_only_filters(&self, plan: &PlanDim, filters: &serde_json::Value, target_yyyymm: u32) -> bool {
         if !self.is_plan_valid_for_month(plan, target_yyyymm) { return false; }
 
@@ -134,8 +132,6 @@ impl QueryEngine {
         let county_lookup = match &self.county_lookup { Some(l) => l, None => return false };
 
         let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => return false };
-        // County may be absent when called with a dummy series (county_key=0) for plan-level
-        // filter checks. Only require it when state/county filter selections are actually set.
         let county = county_lookup.get(&series.county_key);
 
         if !self.is_plan_valid_for_month(plan, target_yyyymm) { return false; }
@@ -388,7 +384,6 @@ impl QueryEngine {
         if let (Some(series_cache), Some(county_lookup), Some(plan_lookup)) =
            (&self.series_cache, &self.county_lookup, &self.plan_lookup) {
 
-            // Phase 1: plan-level filters (org, contract, plan type, eghp, snp)
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
                 if self.matches_plan_only_filters(plan, filters, yyyymm_b) {
@@ -396,7 +391,6 @@ impl QueryEngine {
                 }
             }
 
-            // Pre-build geo filter sets for fast lookup
             let sel_states: HashSet<String> = filters["states"].as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
@@ -404,25 +398,20 @@ impl QueryEngine {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
 
-            // Aggregate by natural key (CID|PID) so that versioned plans (same CID|PID,
-            // different name/plan_key due to metadata change) appear as a single entry.
-            // nk -> (net_change, prior_total, display_name)
             let mut nk_data: HashMap<String, (i32, u32)> = HashMap::new();
-            let mut nk_info: HashMap<String, (String, String, String)> = HashMap::new(); // nk -> (cid, pid, name)
+            let mut nk_info: HashMap<String, (String, String, String)> = HashMap::new();
 
             for series in series_cache.values() {
                 let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
                 let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
                 if !matching_nks.contains(&nk) { continue; }
 
-                // Phase 2: geo filters against real county
                 if !sel_states.is_empty() || !sel_counties.is_empty() {
                     let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => continue };
                     if !sel_states.is_empty() && !sel_states.contains(&county.state_code) { continue; }
                     if !sel_counties.is_empty() && !sel_counties.contains(&county.county_name) { continue; }
                 }
 
-                // Prefer the plan name from the version valid at the analysis month (month_b)
                 let info = nk_info.entry(nk.clone()).or_insert_with(||
                     (plan.contract_id.clone(), plan.plan_id.clone(), plan.plan_name.clone())
                 );
@@ -453,14 +442,13 @@ impl QueryEngine {
     pub fn get_dashboard_summary(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
         let (current_yyyymm, _) = self.get_analysis_months(filters);
         let mut total_enrollment: u64 = 0;
-        let mut unique_plans: HashSet<String> = HashSet::new(); // Natural Key CID|PID
+        let mut unique_plans: HashSet<String> = HashSet::new();
         let mut unique_counties: HashSet<u32> = HashSet::new();
         let mut unique_orgs: HashSet<String> = HashSet::new();
 
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = 
            (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             
-            // 1. Identify matching natural keys at analysis month
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
                 if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
@@ -473,12 +461,8 @@ impl QueryEngine {
                 let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
                 
                 if matching_nks.contains(&nk) {
-                    // Guard against older plan versions sharing the same natural key:
-                    // only the version that is actually valid at the analysis month
-                    // should contribute enrollment, preventing double-counting.
                     if !self.is_plan_valid_for_month(plan, current_yyyymm) { continue; }
 
-                    // Geo filters require a real county
                     let sel_states: HashSet<String> = filters["states"].as_array()
                         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                         .unwrap_or_default();
@@ -514,8 +498,6 @@ impl QueryEngine {
         let mut monthly_totals: HashMap<u32, u64> = HashMap::new();
 
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
-            // 1. Identify which natural keys (CID|PID) match plan-level filters at the analysis month.
-            //    Geo filtering (state/county) is applied per-series in step 2.
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
                 if self.matches_plan_only_filters(plan, current_filters, analysis_yyyymm) {
@@ -523,14 +505,12 @@ impl QueryEngine {
                 }
             }
 
-            // 2. Aggregate data from ALL series belonging to those natural keys
             for series in series_cache.values() {
                 let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => continue };
                 let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
                 let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
 
                 if matching_nks.contains(&nk) {
-                    // Check static geography filters
                     if let Some(sel_states) = current_filters["states"].as_array() {
                         if !sel_states.is_empty() {
                             let states: HashSet<String> = sel_states.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
@@ -544,7 +524,6 @@ impl QueryEngine {
                         }
                     }
 
-                    // Sum all historical data from THIS series for months it was valid
                     let bitmap = series.presence_bitmap;
                     let mut pos = 0;
                     let start_year = (series.start_month_key / 100) as i32;
@@ -599,7 +578,6 @@ impl QueryEngine {
                 let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
 
                 if matching_nks.contains(&nk) {
-                    // Check static geo filters
                     if let Some(sel_states) = filters["states"].as_array() {
                         if !sel_states.is_empty() {
                             let states: HashSet<String> = sel_states.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
@@ -725,21 +703,12 @@ impl QueryEngine {
     pub fn get_plan_list(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
         let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
         let analysis_year = current_yyyymm / 100;
-        // AEP: Feb of analysis year vs Dec of prior year
         let aep_feb_yyyymm = analysis_year * 100 + 2;
         let aep_dec_yyyymm = (analysis_year - 1) * 100 + 12;
 
         struct PlanAccum {
-            contract_id: String,
-            plan_id: String,
-            plan_name: String,
-            parent_org: String,
-            plan_type: String,
-            current: u64,
-            prior: u64,
-            aep_feb: u64,
-            aep_dec: u64,
-            min_valid_from: u32,
+            contract_id: String, plan_id: String, plan_name: String, parent_org: String, plan_type: String,
+            current: u64, prior: u64, aep_feb: u64, aep_dec: u64, min_valid_from: u32,
         }
 
         let mut nk_data: HashMap<String, PlanAccum> = HashMap::new();
@@ -747,7 +716,6 @@ impl QueryEngine {
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) =
             (&self.plan_lookup, &self.county_lookup, &self.series_cache)
         {
-            // Build matching NKs and track earliest valid_from per NK (for "new plan" detection)
             let mut matching_nks = HashSet::new();
             let mut min_valid_from: HashMap<String, u32> = HashMap::new();
             for plan in plan_lookup.values() {
@@ -779,13 +747,9 @@ impl QueryEngine {
 
                 let mvf = min_valid_from.get(&nk).copied().unwrap_or(0);
                 let entry = nk_data.entry(nk).or_insert_with(|| PlanAccum {
-                    contract_id: plan.contract_id.clone(),
-                    plan_id: plan.plan_id.clone(),
-                    plan_name: plan.plan_name.clone(),
-                    parent_org: plan.parent_org.clone(),
-                    plan_type: plan.plan_type.clone(),
-                    current: 0, prior: 0, aep_feb: 0, aep_dec: 0,
-                    min_valid_from: mvf,
+                    contract_id: plan.contract_id.clone(), plan_id: plan.plan_id.clone(), plan_name: plan.plan_name.clone(),
+                    parent_org: plan.parent_org.clone(), plan_type: plan.plan_type.clone(),
+                    current: 0, prior: 0, aep_feb: 0, aep_dec: 0, min_valid_from: mvf,
                 });
 
                 if self.is_plan_valid_for_month(plan, current_yyyymm) {
@@ -812,38 +776,19 @@ impl QueryEngine {
             .map(|e| {
                 let mom_change = e.current as i64 - e.prior as i64;
                 let aep_growth = e.aep_feb as i64 - e.aep_dec as i64;
-                let aep_growth_pct = if e.aep_dec > 0 {
-                    (aep_growth as f64 / e.aep_dec as f64) * 100.0
-                } else if e.aep_feb > 0 { 100.0 } else { 0.0 };
-                // New = plan first appeared in the analysis year
-                let is_new = e.min_valid_from >= analysis_year * 100 + 1
-                    && e.min_valid_from < (analysis_year + 1) * 100 + 1;
+                let aep_growth_pct = if e.aep_dec > 0 { (aep_growth as f64 / e.aep_dec as f64) * 100.0 } else if e.aep_feb > 0 { 100.0 } else { 0.0 };
+                let is_new = e.min_valid_from >= analysis_year * 100 + 1 && e.min_valid_from < (analysis_year + 1) * 100 + 1;
                 serde_json::json!({
-                    "contractId": e.contract_id,
-                    "planId": e.plan_id,
-                    "planName": e.plan_name,
-                    "parentOrg": e.parent_org,
-                    "planType": e.plan_type,
-                    "enrollment": e.current,
-                    "priorEnrollment": e.prior,
-                    "momChange": mom_change,
-                    "aepGrowth": aep_growth,
-                    "aepGrowthPct": aep_growth_pct,
-                    "aepDecEnrollment": e.aep_dec,
-                    "isNew": is_new,
+                    "contractId": e.contract_id, "planId": e.plan_id, "planName": e.plan_name, "parentOrg": e.parent_org,
+                    "planType": e.plan_type, "enrollment": e.current, "priorEnrollment": e.prior, "momChange": mom_change,
+                    "aepGrowth": aep_growth, "aepGrowthPct": aep_growth_pct, "aepDecEnrollment": e.aep_dec, "isNew": is_new,
                 })
             })
             .collect();
 
         rows.sort_by_key(|r| std::cmp::Reverse(r["enrollment"].as_u64().unwrap_or(0)));
 
-        Ok(serde_json::json!({
-            "rows": rows,
-            "currentMonth": current_yyyymm,
-            "priorMonth": prior_yyyymm,
-            "aepFebMonth": aep_feb_yyyymm,
-            "aepDecMonth": aep_dec_yyyymm,
-        }))
+        Ok(serde_json::json!({ "rows": rows, "currentMonth": current_yyyymm, "priorMonth": prior_yyyymm, "aepFebMonth": aep_feb_yyyymm, "aepDecMonth": aep_dec_yyyymm }))
     }
 
     pub fn get_geo_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
@@ -851,9 +796,7 @@ impl QueryEngine {
         let mut state_data: HashMap<String, u64> = HashMap::new();
         let mut county_data: HashMap<String, u64> = HashMap::new(); 
 
-        if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = 
-           (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
-            
+        if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
                 if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
@@ -864,7 +807,6 @@ impl QueryEngine {
             for series in series_cache.values() {
                 let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
                 let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
-
                 if matching_nks.contains(&nk) {
                     if let Some(county) = county_lookup.get(&series.county_key) {
                         if let Some(val) = series.get_enrollment(current_yyyymm) {
@@ -890,27 +832,22 @@ impl QueryEngine {
 
     pub fn get_growth_analytics(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
         let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
-        
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
             let year = current_yyyymm / 100;
             let aep_target = (year * 100) + 2;
             let aep_base = ((year - 1) * 100) + 12;
-
             use rayon::prelude::*;
-
             let mut matching_nks = HashSet::new();
             for plan in plan_lookup.values() {
                 if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
                     matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
                 }
             }
-
             let series_results: Vec<(String, i64, i64, u64, u64, u64, u64, String, String, String)> = series_cache.par_iter()
                 .filter_map(|(_, series)| {
                     let plan = plan_lookup.get(&series.plan_key)?;
                     let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
                     if !matching_nks.contains(&nk) { return None; }
-
                     let county = county_lookup.get(&series.county_key)?;
                     if let Some(sel_states) = filters["states"].as_array() {
                         if !sel_states.is_empty() {
@@ -918,40 +855,20 @@ impl QueryEngine {
                             if !states.contains(&county.state_code) { return None; }
                         }
                     }
-
                     let latest_val = if self.is_plan_valid_for_month(plan, current_yyyymm) { series.get_enrollment(current_yyyymm).unwrap_or(0) } else { 0 };
                     let prior_val = if self.is_plan_valid_for_month(plan, prior_yyyymm) { series.get_enrollment(prior_yyyymm).unwrap_or(0) } else { 0 };
                     let aep_t_val = if self.is_plan_valid_for_month(plan, aep_target) { series.get_enrollment(aep_target).unwrap_or(0) } else { 0 };
                     let aep_b_val = if self.is_plan_valid_for_month(plan, aep_base) { series.get_enrollment(aep_base).unwrap_or(0) } else { 0 };
-
                     if latest_val == 0 && prior_val == 0 && aep_t_val == 0 && aep_b_val == 0 { return None; }
-
-                    Some((
-                        nk,
-                        (latest_val as i64) - (prior_val as i64),
-                        (aep_t_val as i64) - (aep_b_val as i64),
-                        latest_val as u64,
-                        prior_val as u64,
-                        aep_t_val as u64,
-                        aep_b_val as u64,
-                        plan.plan_name.clone(),
-                        plan.contract_id.clone(),
-                        plan.plan_id.clone()
-                    ))
-                })
-                .collect();
-
-            let mut total_growth: i64 = 0;
-            let mut aep_growth: i64 = 0;
+                    Some((nk, (latest_val as i64) - (prior_val as i64), (aep_t_val as i64) - (aep_b_val as i64), latest_val as u64, prior_val as u64, aep_t_val as u64, aep_b_val as u64, plan.plan_name.clone(), plan.contract_id.clone(), plan.plan_id.clone()))
+                }).collect();
+            let mut total_growth: i64 = 0; let mut aep_growth: i64 = 0;
             let mut plan_aggregates: HashMap<String, (u64, u64, u64, u64, String, String, String)> = HashMap::new();
-
             for (nk, mom, aep, cur, pri, a_t, a_b, name, cid, pid) in series_results {
-                total_growth += mom;
-                aep_growth += aep;
+                total_growth += mom; aep_growth += aep;
                 let entry = plan_aggregates.entry(nk).or_insert((0, 0, 0, 0, name, cid, pid));
                 entry.0 += cur; entry.1 += pri; entry.2 += a_t; entry.3 += a_b;
             }
-
             let mut high_flyers = Vec::new();
             for (_, (latest, prior, aep_t, aep_b, name, cid, pid)) in plan_aggregates {
                 if latest > 500 { 
@@ -959,25 +876,13 @@ impl QueryEngine {
                     let pct = if prior > 0 { (change as f64 / prior as f64) * 100.0 } else { 0.0 };
                     let aep_change = aep_t as i64 - aep_b as i64;
                     if pct > 5.0 || change > 1000 || aep_change.abs() > 1000 {
-                        high_flyers.push(serde_json::json!({
-                            "name": name, "contract": cid, "plan": pid,
-                            "current": latest, "change": change, "percent": pct, "aepChange": aep_change
-                        }));
+                        high_flyers.push(serde_json::json!({ "name": name, "contract": cid, "plan": pid, "current": latest, "change": change, "percent": pct, "aepChange": aep_change }));
                     }
                 }
             }
-
             high_flyers.sort_by_key(|h| std::cmp::Reverse((h["percent"].as_f64().unwrap_or(0.0) * 100.0) as i64));
-            
-            return Ok(serde_json::json!({ 
-                "latestMonth": current_yyyymm, 
-                "priorMonth": prior_yyyymm, 
-                "totalGrowth": total_growth, 
-                "aepGrowth": aep_growth, 
-                "highFlyers": high_flyers.into_iter().take(20).collect::<Vec<_>>() 
-            }));
+            return Ok(serde_json::json!({ "latestMonth": current_yyyymm, "priorMonth": prior_yyyymm, "totalGrowth": total_growth, "aepGrowth": aep_growth, "highFlyers": high_flyers.into_iter().take(20).collect::<Vec<_>>() }));
         }
-        
         Err(anyhow::anyhow!("Binary cache required."))
     }
 
@@ -1005,9 +910,7 @@ impl QueryEngine {
                             let year = start_year + curr_month_total / 12;
                             let month = (curr_month_total % 12) + 1;
                             let yyyymm = (year as u32) * 100 + (month as u32);
-                            if let Some(&val) = series.enrollments.get(pos) {
-                                *global_trend.entry(yyyymm).or_insert(0) += val as u64;
-                            }
+                            if let Some(&val) = series.enrollments.get(pos) { *global_trend.entry(yyyymm).or_insert(0) += val as u64; }
                             pos += 1;
                         }
                     }
@@ -1017,10 +920,142 @@ impl QueryEngine {
         footprint.sort_by_key(|f| std::cmp::Reverse(f["enrollment"].as_u64().unwrap_or(0)));
         let mut trend_list: Vec<_> = global_trend.into_iter().collect();
         trend_list.sort_by_key(|(m, _)| *m);
-        Ok(serde_json::json!({
-            "metadata": { "name": plan.plan_name, "contract_id": plan.contract_id, "plan_id": plan.plan_id, "org": plan.parent_org, "type": plan.plan_type, "egwp": plan.is_egwp, "snp": plan.is_snp },
-            "footprint": footprint,
-            "trend": trend_list.into_iter().map(|(m, v)| serde_json::json!({ "month": m, "value": v })).collect::<Vec<_>>()
-        }))
+        Ok(serde_json::json!({ "metadata": { "name": plan.plan_name, "contract_id": plan.contract_id, "plan_id": plan.plan_id, "org": plan.parent_org, "type": plan.plan_type, "egwp": plan.is_egwp, "snp": plan.is_snp }, "footprint": footprint, "trend": trend_list.into_iter().map(|(m, v)| serde_json::json!({ "month": m, "value": v })).collect::<Vec<_>>() }))
+    }
+
+    pub fn get_crosswalk_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, _) = self.get_analysis_months(filters);
+        let year = current_yyyymm / 100;
+        let store_dir = Path::new("store");
+        let crosswalk_path = store_dir.join("crosswalk").join("normalized").join(format!("year={}", year)).join("crosswalk.parquet");
+        if !crosswalk_path.exists() { return Ok(serde_json::json!({ "status": "not_loaded", "year": year })); }
+        let crosswalk_rows = storage::parquet_store::load_crosswalk_data(&crosswalk_path)?;
+        let plan_lookup = match &self.plan_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("Plan lookup required")), };
+        let mut plan_to_org = HashMap::new();
+        for p in plan_lookup.values() {
+            plan_to_org.insert(p.plan_key.to_string(), p.parent_org.clone());
+            plan_to_org.insert(format!("{}-{}", p.contract_id, p.plan_id), p.parent_org.clone());
+        }
+        let mut filtered_rows = Vec::new();
+        let sel_orgs: Option<HashSet<String>> = filters["parentOrgs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+        for row in crosswalk_rows {
+            let org = plan_to_org.get(&row.current_plan_key);
+            if let Some(orgs) = &sel_orgs {
+                if !orgs.is_empty() {
+                    if let Some(o) = org { if !orgs.contains(o) { continue; } } else { continue; }
+                }
+            }
+            filtered_rows.push(row);
+        }
+        let mut total_renewals = 0; let mut total_consolidations = 0; let mut total_new = 0; let mut total_terminated = 0; let mut total_sae = 0; let mut total_sar = 0;
+        for row in &filtered_rows {
+            let s = row.status.to_uppercase();
+            if s.contains("CONSOLIDATED") { total_consolidations += 1; }
+            else if s.contains("RENEWAL") && s.contains("SAE") { total_sae += 1; }
+            else if s.contains("RENEWAL") && s.contains("SAR") { total_sar += 1; }
+            else if s.contains("RENEWAL") { total_renewals += 1; }
+            else if s.contains("NEW") { total_new += 1; }
+            else if s.contains("TERMINATED") || s.contains("NON-RENEWED") { total_terminated += 1; }
+        }
+        Ok(serde_json::json!({ "status": "success", "year": year, "metrics": { "renewals": total_renewals, "consolidations": total_consolidations, "newPlans": total_new, "terminated": total_terminated, "sae": total_sae, "sar": total_sar, }, "rows": filtered_rows.into_iter().take(1000).collect::<Vec<_>>() }))
+    }
+
+    pub fn get_aep_switching(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, _) = self.get_analysis_months(filters);
+        let year = current_yyyymm / 100;
+        
+        let aep_target_yyyymm = year * 100 + 2; // Feb
+        let aep_base_yyyymm = (year - 1) * 100 + 12; // Dec prior year
+
+        if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) = (&self.plan_lookup, &self.county_lookup, &self.series_cache) {
+            
+            // 1. Load Crosswalk for mapping
+            let store_dir = Path::new("store");
+            let crosswalk_path = store_dir.join("crosswalk").join("normalized").join(format!("year={}", year)).join("crosswalk.parquet");
+            
+            let mut crosswalk_map: HashMap<String, Vec<String>> = HashMap::new(); // prev_key -> [curr_keys]
+            if crosswalk_path.exists() {
+                let crosswalk_rows = storage::parquet_store::load_crosswalk_data(&crosswalk_path)?;
+                for row in crosswalk_rows {
+                    crosswalk_map.entry(row.previous_plan_key).or_default().push(row.current_plan_key);
+                }
+            }
+
+            // 2. Aggregate actual enrollment
+            let mut plan_aep_base: HashMap<String, u64> = HashMap::new();
+            let mut plan_aep_target: HashMap<String, u64> = HashMap::new();
+            
+            // NK -> Org
+            let mut nk_to_org = HashMap::new();
+            for p in plan_lookup.values() {
+                nk_to_org.insert(format!("{}-{}", p.contract_id, p.plan_id), p.parent_org.clone());
+            }
+
+            for series in series_cache.values() {
+                let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
+                let nk = format!("{}-{}", plan.contract_id, plan.plan_id);
+                
+                // Geo filters
+                let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => continue };
+                if let Some(sel_states) = filters["states"].as_array() {
+                    if !sel_states.is_empty() {
+                        let states: HashSet<String> = sel_states.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                        if !states.contains(&county.state_code) { continue; }
+                    }
+                }
+
+                if let Some(val) = series.get_enrollment(aep_base_yyyymm) {
+                    *plan_aep_base.entry(nk.clone()).or_insert(0) += val as u64;
+                }
+                if let Some(val) = series.get_enrollment(aep_target_yyyymm) {
+                    *plan_aep_target.entry(nk).or_insert(0) += val as u64;
+                }
+            }
+
+            // 3. Estimate switching
+            // For each plan in base year, where did they go?
+            // expected_target[curr_plan] = sum(base[prev_plan] for all prev mapping to curr)
+            let mut expected_target: HashMap<String, u64> = HashMap::new();
+            for (prev_nk, base_val) in &plan_aep_base {
+                if let Some(curr_nks) = crosswalk_map.get(prev_nk) {
+                    // Simple split for now if multiple destinations (rare)
+                    let share = base_val / curr_nks.len() as u64;
+                    for curr_nk in curr_nks {
+                        *expected_target.entry(curr_nk.clone()).or_insert(0) += share;
+                    }
+                }
+            }
+
+            let mut org_results: HashMap<String, (i64, i64)> = HashMap::new(); // org -> (total_growth, true_switching)
+
+            for (nk, actual_val) in &plan_aep_target {
+                let expected_val = expected_target.get(nk).cloned().unwrap_or(0);
+                let switching_component = *actual_val as i64 - expected_val as i64;
+                
+                if let Some(org) = nk_to_org.get(nk) {
+                    let entry = org_results.entry(org.clone()).or_insert((0, 0));
+                    let base_val = plan_aep_base.get(nk).cloned().unwrap_or(0);
+                    entry.0 += *actual_val as i64 - base_val as i64;
+                    entry.1 += switching_component;
+                }
+            }
+
+            let mut results_list = Vec::new();
+            for (org, (growth, switching)) in org_results {
+                results_list.push(serde_json::json!({
+                    "organization": org,
+                    "aepGrowth": growth,
+                    "estimatedSwitching": switching,
+                }));
+            }
+            results_list.sort_by_key(|r| std::cmp::Reverse(r["estimatedSwitching"].as_i64().unwrap_or(0)));
+
+            return Ok(serde_json::json!({
+                "year": year,
+                "results": results_list
+            }));
+        }
+        
+        Err(anyhow::anyhow!("Binary cache required."))
     }
 }

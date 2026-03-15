@@ -6,6 +6,7 @@ import { OrganizationAnalysis } from './pages/OrganizationAnalysis';
 import { Geography } from './pages/Geography';
 import { GrowthAnalytics } from './pages/GrowthAnalytics';
 import { PlanDetail } from './pages/PlanDetail';
+import { CrosswalkAnalysis } from './pages/CrosswalkAnalysis';
 import { DataManagement } from './pages/DataManagement';
 import { FilterProvider } from './context/FilterContext';
 import { OrgDisplayProvider } from './context/OrgDisplayContext';
@@ -30,6 +31,7 @@ function App() {
             <Route path="/plans" element={<PlanDetail />} />
             <Route path="/geography" element={<Geography />} />
             <Route path="/growth" element={<GrowthAnalytics />} />
+            <Route path="/crosswalk" element={<CrosswalkAnalysis />} />
             <Route path="/data" element={<DataManagement />} />
             <Route path="/exports" element={<Placeholder title="Exports" />} />
           </Routes>
