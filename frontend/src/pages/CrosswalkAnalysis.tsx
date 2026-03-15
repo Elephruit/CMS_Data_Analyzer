@@ -23,6 +23,29 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+interface CrosswalkRow {
+  crosswalk_year: number;
+  previous_contract_id: string;
+  previous_plan_id: string;
+  previous_plan_key: string;
+  previous_plan_name?: string;
+  current_contract_id: string;
+  current_plan_id: string;
+  current_plan_key: string;
+  current_plan_name?: string;
+  status: string;
+  is_new: boolean;
+  is_terminated: boolean;
+  is_expansion: boolean;
+  is_reduction: boolean;
+  total_counties: number;
+  filtered_counties: number;
+  counties_added: number;
+  counties_removed: number;
+  org?: string;
+  plan_type?: string;
+}
+
 interface CrosswalkData {
   status: string;
   year: number;
@@ -34,7 +57,7 @@ interface CrosswalkData {
     sae: number;
     sar: number;
   };
-  rows?: any[];
+  rows?: CrosswalkRow[];
 }
 
 interface AEPSwitching {
@@ -111,11 +134,12 @@ export const CrosswalkAnalysis: React.FC = () => {
     fetchData();
   }, [filters]);
 
-  const filteredRows = data?.rows?.filter(r => 
+  const filteredRows = data?.rows?.filter(r =>
     r.previous_plan_key.toLowerCase().includes(searchTerm.toLowerCase()) ||
     r.current_plan_key.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (r.previous_plan_name && r.previous_plan_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    (r.current_plan_name && r.current_plan_name.toLowerCase().includes(searchTerm.toLowerCase()))
+    (r.current_plan_name && r.current_plan_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+    (r.org && r.org.toLowerCase().includes(searchTerm.toLowerCase()))
   ) || [];
 
   if (loading) {
@@ -225,52 +249,76 @@ export const CrosswalkAnalysis: React.FC = () => {
                       <th className="px-4 py-2 text-center">Transition</th>
                       <th className="px-4 py-2">Current Year Plan ({data?.year})</th>
                       <th className="px-4 py-2">Status</th>
+                      <th className="px-4 py-2 text-right">Counties</th>
                       <th className="px-4 py-2 text-right">Lineage</th>
                     </tr>
                   </thead>
                   <tbody className="space-y-2">
                     {filteredRows.map((row, idx) => {
-                      const s = row.status.toUpperCase();
-                      const isNew = s.includes("NEW");
-                      const isTerminated = s.includes("TERMINATED") || s.includes("NON-RENEWED");
-                      const isConsolidated = s.includes("CONSOLIDATED");
-                      
+                      const { is_new: isNew, is_terminated: isTerminated, is_expansion, is_reduction } = row;
+                      const isConsolidated = row.status.toUpperCase().includes("CONSOLIDATED");
+
                       return (
                         <tr key={idx} className="group hover:bg-slate-800/30 transition-colors">
                           <td className="px-4 py-4 bg-slate-900/50 rounded-l-xl border-y border-l border-slate-800 group-hover:border-slate-700">
                             <div className="flex flex-col">
                               <span className={cn("text-xs font-black", isNew ? "text-slate-600 line-through" : "text-sky-400")}>
-                                {row.previous_plan_key}
+                                {row.previous_plan_key || '—'}
                               </span>
                               <span className="text-[10px] text-slate-500 font-medium truncate max-w-[200px]">
-                                {row.previous_plan_name || (isNew ? 'N/A' : 'Unknown')}
+                                {row.previous_plan_name || (isNew ? 'N/A' : '')}
                               </span>
+                              {row.org && (
+                                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter truncate max-w-[200px]">
+                                  {row.org}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700 text-center">
                             <ArrowRight className={cn(
                               "w-4 h-4 mx-auto",
-                              isNew ? "text-emerald-500" : isTerminated ? "text-rose-500" : "text-sky-500"
+                              isNew ? "text-emerald-500" : isTerminated ? "text-rose-500" : is_expansion ? "text-emerald-400" : is_reduction ? "text-amber-400" : "text-sky-500"
                             )} />
                           </td>
                           <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700">
                             <div className="flex flex-col">
                               <span className={cn("text-xs font-black", isTerminated ? "text-slate-600 line-through" : "text-sky-400")}>
-                                {row.current_plan_key}
+                                {row.current_plan_key || '—'}
                               </span>
                               <span className="text-[10px] text-slate-500 font-medium truncate max-w-[200px]">
-                                {row.current_plan_name || (isTerminated ? 'N/A' : 'Unknown')}
+                                {row.current_plan_name || (isTerminated ? 'N/A' : '')}
                               </span>
+                              {row.plan_type && (
+                                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter">
+                                  {row.plan_type}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700">
-                            <Badge 
-                              variant={isNew ? 'success' : isTerminated ? 'danger' : isConsolidated ? 'warning' : 'primary'}
+                            <Badge
+                              variant={isNew ? 'success' : isTerminated ? 'danger' : is_expansion ? 'success' : is_reduction ? 'warning' : isConsolidated ? 'warning' : 'primary'}
                               label={row.status}
                             />
                           </td>
+                          <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700 text-right">
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span className="text-xs font-bold text-slate-300">
+                                {row.filtered_counties > 0 && row.filtered_counties !== row.total_counties
+                                  ? `${row.filtered_counties} / ${row.total_counties}`
+                                  : row.total_counties}
+                              </span>
+                              {row.counties_added > 0 && (
+                                <span className="text-[9px] font-bold text-emerald-500">+{row.counties_added}</span>
+                              )}
+                              {row.counties_removed > 0 && (
+                                <span className="text-[9px] font-bold text-rose-500">-{row.counties_removed}</span>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-4 py-4 bg-slate-900/50 rounded-r-xl border-y border-r border-slate-800 group-hover:border-slate-700 text-right">
-                            <button 
+                            <button
                               onClick={() => fetchLineage(row)}
                               className="p-2 hover:bg-sky-500/10 rounded-lg transition-all text-slate-500 hover:text-sky-400"
                               title="View Plan Lineage"

@@ -495,7 +495,7 @@ fn map_crosswalk_row(
     let curr_contract = find(&["Current Contract ID", "CURR_CONTRACT_ID", "Contract ID (Current)", "NEW_CONTRACT_ID", "CUR_CNT_ID", "Contract Number (Current)"]);
     let curr_plan = find(&["Current Plan ID", "CUR_PLAN_ID", "Plan ID (Current)", "NEW_PLAN_ID", "CUR_PLN_ID"]);
 
-    let status = find(&["Status", "Crosswalk Status", "CROSSWALK_STATUS"]).unwrap_or_else(|| "Renewal Plan".to_string());
+    let raw_status = find(&["Status", "Crosswalk Status", "CROSSWALK_STATUS", "Crosswalk_Status"]);
 
     // Validation: must have at least one side identified
     if (prev_contract.is_none() || prev_plan.is_none()) && (curr_contract.is_none() || curr_plan.is_none()) {
@@ -507,6 +507,24 @@ fn map_crosswalk_row(
     let cc = curr_contract.unwrap_or_default();
     let cp = curr_plan.unwrap_or_default();
 
+    // Infer termination status from plan ID values when the status field is missing or
+    // generic. CMS crosswalk files often encode termination as literal "TERMINATED" values
+    // in the current contract/plan ID columns rather than (or in addition to) the status column.
+    let status = {
+        let s_up = raw_status.as_deref().unwrap_or("").to_uppercase();
+        if s_up.contains("TERMINATED") || s_up.contains("NON-RENEWED") {
+            raw_status.unwrap_or_else(|| "Terminated/Non-Renewed Contract".to_string())
+        } else {
+            let cc_up = cc.to_uppercase();
+            let cp_up = cp.to_uppercase();
+            if cc_up.contains("TERMINATED") || cp_up.contains("TERMINATED") {
+                "Terminated/Non-Renewed Contract".to_string()
+            } else {
+                raw_status.unwrap_or_else(|| "Renewal Plan".to_string())
+            }
+        }
+    };
+
     let norm = NormalizedCrosswalkRow {
         crosswalk_year: year,
         previous_contract_id: pc.clone(),
@@ -514,12 +532,12 @@ fn map_crosswalk_row(
         previous_plan_key: if pc.is_empty() { String::new() } else { format!("{}-{}", pc, pp) },
         previous_plan_name: find(&["Previous Plan Name", "PRV_PLN_NM", "Plan Name (Previous)"]),
         previous_snp_type: find(&["Previous SNP Type"]),
-        
+
         current_contract_id: cc.clone(),
         current_plan_id: cp.clone(),
         current_plan_key: if cc.is_empty() { String::new() } else { format!("{}-{}", cc, cp) },
         current_plan_name: find(&["Current Plan Name", "CUR_PLN_NM", "Plan Name (Current)"]),
-        
+
         status,
         source_file: file_name.to_string(),
         source_sheet: sheet.map(|s| s.to_string()),

@@ -934,34 +934,192 @@ impl QueryEngine {
         let crosswalk_path = store_dir.join("crosswalk").join("normalized").join(format!("year={}", year)).join("crosswalk.parquet");
         if !crosswalk_path.exists() { return Ok(serde_json::json!({ "status": "not_loaded", "year": year })); }
         let crosswalk_rows = storage::parquet_store::load_crosswalk_data(&crosswalk_path)?;
+
         let plan_lookup = match &self.plan_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("Plan lookup required")), };
-        let mut plan_to_org = HashMap::new();
-        for p in plan_lookup.values() {
-            plan_to_org.insert(p.plan_key.to_string(), p.parent_org.clone());
-            plan_to_org.insert(format!("{}-{}", p.contract_id, p.plan_id), p.parent_org.clone());
+        let county_lookup = match &self.county_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("County lookup required")), };
+        let series_cache = match &self.series_cache { Some(c) => c, None => return Err(anyhow::anyhow!("Series cache required")), };
+
+        // Build str-key → u32 plan_key map for footprint lookups
+        let mut str_to_plan_key: HashMap<String, u32> = HashMap::new();
+        for (k, p) in plan_lookup.iter() {
+            str_to_plan_key.insert(format!("{}-{}", p.contract_id, p.plan_id), *k);
         }
-        let mut filtered_rows = Vec::new();
-        let sel_orgs: Option<HashSet<String>> = filters["parentOrgs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
-        for row in crosswalk_rows {
-            let org = plan_to_org.get(&row.current_plan_key);
-            if let Some(orgs) = &sel_orgs {
-                if !orgs.is_empty() {
-                    if let Some(o) = org { if !orgs.contains(o) { continue; } } else { continue; }
+
+        // Build county footprints: plan_key_u32 → Set<county_key> for each year
+        // A plan "serves" a county in a year if it has any enrollment in that year.
+        let mut prior_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
+        let mut curr_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
+        let prior_yr_start = (year - 1) * 100 + 1;
+        let prior_yr_end   = (year - 1) * 100 + 12;
+        let curr_yr_start  = year * 100 + 1;
+        let curr_yr_end    = year * 100 + 12;
+        for ((pk, ck), series) in series_cache.iter() {
+            for month in prior_yr_start..=prior_yr_end {
+                if series.get_enrollment(month).map(|e| e > 0).unwrap_or(false) {
+                    prior_fp.entry(*pk).or_default().insert(*ck);
+                    break;
                 }
             }
-            filtered_rows.push(row);
+            for month in curr_yr_start..=curr_yr_end {
+                if series.get_enrollment(month).map(|e| e > 0).unwrap_or(false) {
+                    curr_fp.entry(*pk).or_default().insert(*ck);
+                    break;
+                }
+            }
         }
-        let mut total_renewals = 0; let mut total_consolidations = 0; let mut total_new = 0; let mut total_terminated = 0; let mut total_sae = 0; let mut total_sar = 0;
-        for row in &filtered_rows {
-            let s = row.status.to_uppercase();
-            if s.contains("CONSOLIDATED") { total_consolidations += 1; }
-            else if s.contains("RENEWAL") && s.contains("SAE") { total_sae += 1; }
-            else if s.contains("RENEWAL") && s.contains("SAR") { total_sar += 1; }
-            else if s.contains("RENEWAL") { total_renewals += 1; }
-            else if s.contains("NEW") { total_new += 1; }
-            else if s.contains("TERMINATED") || s.contains("NON-RENEWED") { total_terminated += 1; }
+
+        // Parse active filters, treating empty arrays as no-filter
+        let sel_orgs: Option<HashSet<String>> = filters["parentOrgs"].as_array().and_then(|a| {
+            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
+            if s.is_empty() { None } else { Some(s) }
+        });
+        let sel_states: Option<HashSet<String>> = filters["states"].as_array().and_then(|a| {
+            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
+            if s.is_empty() { None } else { Some(s) }
+        });
+        let sel_counties: Option<HashSet<String>> = filters["counties"].as_array().and_then(|a| {
+            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
+            if s.is_empty() { None } else { Some(s) }
+        });
+        let sel_types: Option<HashSet<String>> = filters["planTypes"].as_array().and_then(|a| {
+            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
+            if s.is_empty() { None } else { Some(s) }
+        });
+        let sel_snp = filters["snp"].as_bool();
+
+        let mut total_renewals = 0i64; let mut total_consolidations = 0i64; let mut total_new = 0i64;
+        let mut total_terminated = 0i64; let mut total_sae = 0i64; let mut total_sar = 0i64;
+        let mut enriched_rows: Vec<serde_json::Value> = Vec::new();
+
+        for row in &crosswalk_rows {
+            // Determine effective status: also infer termination from current plan ID fields
+            // in case the status column was not captured or is inconsistent.
+            let effective_status = {
+                let s_up = row.status.to_uppercase();
+                if s_up.contains("TERMINATED") || s_up.contains("NON-RENEWED") {
+                    row.status.clone()
+                } else {
+                    let cc_up = row.current_contract_id.to_uppercase();
+                    let cp_up = row.current_plan_id.to_uppercase();
+                    if cc_up.contains("TERMINATED") || cp_up.contains("TERMINATED") {
+                        "Terminated/Non-Renewed Contract".to_string()
+                    } else {
+                        row.status.clone()
+                    }
+                }
+            };
+            let s_up = effective_status.to_uppercase();
+            let is_terminated = s_up.contains("TERMINATED") || s_up.contains("NON-RENEWED");
+            let is_new_plan = (s_up.contains("NEW") || s_up.contains("INITIAL")) && !is_terminated;
+
+            // For terminated/new plans, use previous plan key for org/type/snp lookups.
+            // Terminated plans have no valid current plan to look up.
+            let ref_key = if is_terminated || row.current_plan_key.is_empty() {
+                &row.previous_plan_key
+            } else {
+                &row.current_plan_key
+            };
+            let plan_dim = str_to_plan_key.get(ref_key.as_str()).and_then(|pk| plan_lookup.get(pk));
+
+            // --- Filters ---
+            if let Some(orgs) = &sel_orgs {
+                match plan_dim { Some(p) => if !orgs.contains(&p.parent_org) { continue; }, None => continue }
+            }
+            if let Some(types) = &sel_types {
+                match plan_dim { Some(p) => if !types.contains(&p.plan_type) { continue; }, None => continue }
+            }
+            if let Some(snp) = sel_snp {
+                match plan_dim { Some(p) => if p.is_snp != snp { continue; }, None => continue }
+            }
+
+            // Build county footprints for this row
+            let prev_counties: HashSet<u32> = str_to_plan_key.get(row.previous_plan_key.as_str())
+                .and_then(|pk| prior_fp.get(pk)).cloned().unwrap_or_default();
+            let curr_counties: HashSet<u32> = if is_terminated {
+                HashSet::new()
+            } else {
+                str_to_plan_key.get(row.current_plan_key.as_str())
+                    .and_then(|pk| curr_fp.get(pk)).cloned().unwrap_or_default()
+            };
+
+            // Geo filtering: use prior footprint for terminated plans (they had a footprint before exit)
+            let geo_counties = if is_terminated { &prev_counties } else { &curr_counties };
+
+            if let Some(states) = &sel_states {
+                let in_state = geo_counties.iter().any(|ck| {
+                    county_lookup.get(ck).map(|c| states.contains(&c.state_code)).unwrap_or(false)
+                });
+                if !in_state { continue; }
+            }
+            if let Some(counties) = &sel_counties {
+                let in_county = geo_counties.iter().any(|ck| {
+                    county_lookup.get(ck).map(|c| counties.contains(&c.county_name)).unwrap_or(false)
+                });
+                if !in_county { continue; }
+            }
+
+            // Accumulate totals
+            if s_up.contains("CONSOLIDATED") { total_consolidations += 1; }
+            else if s_up.contains("RENEWAL") && s_up.contains("SAE") { total_sae += 1; }
+            else if s_up.contains("RENEWAL") && s_up.contains("SAR") { total_sar += 1; }
+            else if s_up.contains("RENEWAL") { total_renewals += 1; }
+            else if is_new_plan { total_new += 1; }
+            else if is_terminated { total_terminated += 1; }
+
+            // Compute service-area change metrics
+            let counties_added: usize = curr_counties.difference(&prev_counties).count();
+            let counties_removed: usize = prev_counties.difference(&curr_counties).count();
+
+            // Count counties within the active geo filter (for filtered_counties display)
+            let count_in_filter = |set: &HashSet<u32>| -> usize {
+                set.iter().filter(|&&ck| {
+                    let c = match county_lookup.get(&ck) { Some(c) => c, None => return false };
+                    if let Some(states) = &sel_states { if !states.contains(&c.state_code) { return false; } }
+                    if let Some(cties) = &sel_counties { if !cties.contains(&c.county_name) { return false; } }
+                    true
+                }).count()
+            };
+
+            let total_counties = if is_terminated { prev_counties.len() } else { curr_counties.len() };
+            let filtered_counties = count_in_filter(if is_terminated { &prev_counties } else { &curr_counties });
+
+            enriched_rows.push(serde_json::json!({
+                "crosswalk_year":        row.crosswalk_year,
+                "previous_contract_id":  row.previous_contract_id,
+                "previous_plan_id":      row.previous_plan_id,
+                "previous_plan_key":     row.previous_plan_key,
+                "previous_plan_name":    row.previous_plan_name,
+                "current_contract_id":   row.current_contract_id,
+                "current_plan_id":       row.current_plan_id,
+                "current_plan_key":      row.current_plan_key,
+                "current_plan_name":     row.current_plan_name,
+                "status":                effective_status,
+                "is_new":                is_new_plan,
+                "is_terminated":         is_terminated,
+                "is_expansion":          counties_added > 0 && counties_removed == 0 && !is_new_plan && !is_terminated,
+                "is_reduction":          counties_removed > 0 && counties_added == 0 && !is_new_plan && !is_terminated,
+                "total_counties":        total_counties,
+                "filtered_counties":     filtered_counties,
+                "counties_added":        counties_added,
+                "counties_removed":      counties_removed,
+                "org":                   plan_dim.map(|p| p.parent_org.as_str()),
+                "plan_type":             plan_dim.map(|p| p.plan_type.as_str()),
+            }));
         }
-        Ok(serde_json::json!({ "status": "success", "year": year, "metrics": { "renewals": total_renewals, "consolidations": total_consolidations, "newPlans": total_new, "terminated": total_terminated, "sae": total_sae, "sar": total_sar, }, "rows": filtered_rows.into_iter().take(1000).collect::<Vec<_>>() }))
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "year": year,
+            "metrics": {
+                "renewals":       total_renewals,
+                "consolidations": total_consolidations,
+                "newPlans":       total_new,
+                "terminated":     total_terminated,
+                "sae":            total_sae,
+                "sar":            total_sar,
+            },
+            "rows": enriched_rows.into_iter().take(1000).collect::<Vec<_>>()
+        }))
     }
 
     pub fn get_aep_switching(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
