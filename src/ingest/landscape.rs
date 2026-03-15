@@ -62,15 +62,18 @@ fn scan_zip_bytes_recursive(bytes: &[u8], discovered: &mut Vec<LandscapeFileDisc
             "zip" => {
                 let mut nested_content = Vec::new();
                 zip_file.read_to_end(&mut nested_content)?;
+                log::info!("Diving into nested ZIP: {}", full_name);
                 scan_zip_bytes_recursive(&nested_content, discovered, &full_name)?;
             }
             "csv" | "xlsx" | "xlsm" | "xlsb" | "xls" => {
+                log::debug!("Evaluating candidate file: {}", full_name);
                 match process_zip_entry(&mut zip_file, &full_name) {
                     Ok(Some(disc)) => {
                         if disc.year > 0 {
+                            log::info!("Discovered Landscape for year {}: {}", disc.year, full_name);
                             discovered.push(disc);
                         } else {
-                            log::debug!("Skipping file with unidentifiable year: {}", full_name);
+                            log::warn!("Identified data file but could not infer year: {}", full_name);
                         }
                     },
                     Ok(None) => {},
@@ -122,11 +125,11 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str) -> Result<O
                 return Ok(None);
             }
 
-            // Heuristic: prefer sheets with "MA-PD" or "Landscape" or "Enrollment" or just the first one
+            // Heuristic: prefer sheets with "MA-PD" or "Landscape" or "Enrollment" or "Plan" or just the first one
             let sheet_name = sheet_names.iter()
                 .find(|s| {
                     let s_up = s.to_uppercase();
-                    s_up.contains("MA-PD") || s_up.contains("LANDSCAPE") || s_up.contains("PLAN")
+                    s_up.contains("MA-PD") || s_up.contains("LANDSCAPE") || s_up.contains("PLAN") || s_up.contains("PREMIUM")
                 })
                 .cloned()
                 .unwrap_or_else(|| sheet_names[0].clone());
@@ -261,32 +264,38 @@ fn get_recursive_file_content(archive_path: &Path, target_full_path: &str) -> Re
     Ok(current_bytes)
 }
 
-fn infer_year(name: &str) -> i32 {
-    let name_up = name.to_uppercase();
+fn infer_year(path: &str) -> i32 {
+    let parts: Vec<&str> = path.split('/').collect();
     
-    // 1. Look for 4-digit years starting with 20 (e.g. 2006, 2025)
-    let re4 = regex::Regex::new(r"20(\d{2})").unwrap();
-    if let Some(cap) = re4.captures(&name_up) {
-        return format!("20{}", &cap[1]).parse().unwrap_or(0);
-    }
+    // Search from right to left (most specific part first)
+    for part in parts.iter().rev() {
+        let part_up = part.to_uppercase();
+        
+        // 1. Look for CY followed by 4 digits (e.g. CY2022)
+        let re_cy4 = regex::Regex::new(r"CY(20\d{2})").unwrap();
+        if let Some(cap) = re_cy4.captures(&part_up) {
+            return cap[1].parse().unwrap_or(0);
+        }
 
-    // 2. Look for CY followed by 2 or 4 digits
-    let re_cy = regex::Regex::new(r"CY(\d{2,4})").unwrap();
-    if let Some(cap) = re_cy.captures(&name_up) {
-        let yr_str = &cap[1];
-        if yr_str.len() == 2 {
-            let yr: i32 = yr_str.parse().unwrap_or(0);
+        // 2. Look for 4 digits starting with 20 (e.g. 2025)
+        let re4 = regex::Regex::new(r"20(\d{2})").unwrap();
+        if let Some(cap) = re4.captures(&part_up) {
+            return format!("20{}", &cap[1]).parse().unwrap_or(0);
+        }
+
+        // 3. Look for CY followed by 2 digits (e.g. CY06)
+        let re_cy2 = regex::Regex::new(r"CY(\d{2})").unwrap();
+        if let Some(cap) = re_cy2.captures(&part_up) {
+            let yr: i32 = cap[1].parse().unwrap_or(0);
             if yr > 50 { return 1900 + yr; }
             else { return 2000 + yr; }
-        } else if yr_str.len() == 4 {
-            return yr_str.parse().unwrap_or(0);
         }
-    }
 
-    // 3. Fallback to any 4 digits
-    let re_any4 = regex::Regex::new(r"(\d{4})").unwrap();
-    if let Some(cap) = re_any4.captures(&name_up) {
-        return cap[1].parse().unwrap_or(0);
+        // 4. Look for standalone 4-digit years in common ranges (2000-2030)
+        let re_any4 = regex::Regex::new(r"(20[0-2]\d)").unwrap();
+        if let Some(cap) = re_any4.captures(&part_up) {
+            return cap[1].parse().unwrap_or(0);
+        }
     }
 
     0
