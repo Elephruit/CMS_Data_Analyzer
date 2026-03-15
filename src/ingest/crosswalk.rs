@@ -358,13 +358,25 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
         };
 
         let mut file_rows = 0;
-        match f.file_type {
+        let process_result: Result<(), anyhow::Error> = match f.file_type {
             LandscapeFileType::Csv => {
+                let (decoded_content, _encoding, _has_bom) = if extension == "txt" {
+                    let (res, enc, bom) = encoding_rs::UTF_16LE.decode(&content);
+                    if res.contains('\u{fffd}') {
+                        // Try UTF-8 if UTF-16 fails
+                        encoding_rs::UTF_8.decode(&content)
+                    } else {
+                        (res, enc, bom)
+                    }
+                } else {
+                    encoding_rs::UTF_8.decode(&content)
+                };
+
                 let delimiter = if extension == "txt" { b'\t' } else { b',' };
                 let mut rdr = csv::ReaderBuilder::new()
                     .has_headers(true)
                     .delimiter(delimiter)
-                    .from_reader(content.as_slice());
+                    .from_reader(decoded_content.as_bytes());
                 
                 let headers: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
                 
@@ -382,16 +394,11 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
                         file_rows += 1;
                     }
                 }
+                Ok(())
             }
             LandscapeFileType::Xls | LandscapeFileType::Xlsx | LandscapeFileType::Xlsb => {
                 let cursor = std::io::Cursor::new(content);
-                let mut workbook = match open_workbook_auto_from_rs(cursor) {
-                    Ok(wb) => wb,
-                    Err(e) => {
-                        log::error!("Failed to open Excel workbook for {}: {}", f.file_name, e);
-                        continue;
-                    }
-                };
+                let mut workbook = open_workbook_auto_from_rs(cursor)?;
                 
                 let sheet_name = match &f.sheet {
                     Some(s) => s.clone(),
@@ -418,9 +425,15 @@ pub async fn ingest_crosswalk_year(year: i32, force: bool, store_dir: &Path) -> 
                         }
                     }
                 }
+                Ok(())
             }
+        };
+
+        if let Err(e) = process_result {
+            log::error!("Error processing crosswalk file {}: {}", f.file_name, e);
+        } else {
+            log::info!("Extracted {} normalized rows from {}", file_rows, f.file_name);
         }
-        log::info!("Extracted {} normalized rows from {}", file_rows, f.file_name);
     }
 
     log::info!("Total crosswalk rows normalized for year {}: {}", year, normalized_rows.len());
