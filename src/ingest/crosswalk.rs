@@ -452,18 +452,22 @@ fn map_crosswalk_row(
 ) -> Option<NormalizedCrosswalkRow> {
     let find = |keys: &[&str]| {
         for &k in keys {
+            let k_clean = k.to_uppercase().replace('_', "").replace(' ', "");
+            
+            // Direct lookup
             if let Some(v) = row.get(k) { 
                 let trimmed = v.trim();
                 if !trimmed.is_empty() { return Some(trimmed.to_string()); }
             }
+            
+            // Fuzzy lookup
             for (rk, rv) in row {
-                let rk_up = rk.to_uppercase();
-                let k_up = k.to_uppercase();
-                if rk_up == k_up { 
+                let rk_clean = rk.to_uppercase().replace('_', "").replace(' ', "");
+                if rk_clean == k_clean {
                     let trimmed = rv.trim();
                     if !trimmed.is_empty() { return Some(trimmed.to_string()); }
                 }
-                if rk_up.contains(&k_up) { 
+                if rk_clean.contains(&k_clean) { 
                     let trimmed = rv.trim();
                     if !trimmed.is_empty() { return Some(trimmed.to_string()); }
                 }
@@ -472,11 +476,11 @@ fn map_crosswalk_row(
         None
     };
 
-    let prev_contract = find(&["Previous Contract ID", "Contract ID (Previous)", "PREV_CONTRACT_ID", "Contract Number (Previous)", "OLD_CONTRACT_ID", "PRV_CNT_ID"]);
-    let prev_plan = find(&["Previous Plan ID", "Plan ID (Previous)", "PREV_PLAN_ID", "OLD_PLAN_ID", "PRV_PLN_ID"]);
+    let prev_contract = find(&["Previous Contract ID", "PREV_CONTRACT_ID", "Contract ID (Previous)", "OLD_CONTRACT_ID", "PRV_CNT_ID", "Contract Number (Previous)"]);
+    let prev_plan = find(&["Previous Plan ID", "PREV_PLAN_ID", "Plan ID (Previous)", "OLD_PLAN_ID", "PRV_PLN_ID"]);
     
-    let curr_contract = find(&["Current Contract ID", "Contract ID (Current)", "CURR_CONTRACT_ID", "Contract Number (Current)", "NEW_CONTRACT_ID", "CUR_CNT_ID"]);
-    let curr_plan = find(&["Current Plan ID", "Plan ID (Current)", "CURR_PLAN_ID", "NEW_PLAN_ID", "CUR_PLN_ID"]);
+    let curr_contract = find(&["Current Contract ID", "CURR_CONTRACT_ID", "Contract ID (Current)", "NEW_CONTRACT_ID", "CUR_CNT_ID", "Contract Number (Current)"]);
+    let curr_plan = find(&["Current Plan ID", "CUR_PLAN_ID", "Plan ID (Current)", "NEW_PLAN_ID", "CUR_PLN_ID"]);
 
     let status = find(&["Status", "Crosswalk Status", "CROSSWALK_STATUS"]).unwrap_or_else(|| "Renewal Plan".to_string());
 
@@ -495,13 +499,13 @@ fn map_crosswalk_row(
         previous_contract_id: pc.clone(),
         previous_plan_id: pp.clone(),
         previous_plan_key: if pc.is_empty() { String::new() } else { format!("{}-{}", pc, pp) },
-        previous_plan_name: find(&["Previous Plan Name", "Plan Name (Previous)", "PRV_PLN_NM"]),
+        previous_plan_name: find(&["Previous Plan Name", "PRV_PLN_NM", "Plan Name (Previous)"]),
         previous_snp_type: find(&["Previous SNP Type"]),
         
         current_contract_id: cc.clone(),
         current_plan_id: cp.clone(),
         current_plan_key: if cc.is_empty() { String::new() } else { format!("{}-{}", cc, cp) },
-        current_plan_name: find(&["Current Plan Name", "Plan Name (Current)", "CUR_PLN_NM"]),
+        current_plan_name: find(&["Current Plan Name", "CUR_PLN_NM", "Plan Name (Current)"]),
         
         status,
         source_file: file_name.to_string(),
