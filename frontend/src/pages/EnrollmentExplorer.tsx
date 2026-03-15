@@ -44,7 +44,7 @@ interface ExplorerData {
 
 export const EnrollmentExplorer: React.FC = () => {
   const { filters } = useFilters();
-  const { getDisplayName } = useOrgDisplay();
+  const { getDisplayName, getColor } = useOrgDisplay();
   const [grain, setGrain] = useState<Grain>('parentOrg');
   const [data, setData] = useState<ExplorerData | null>(null);
   const [loading, setLoading] = useState(true);
