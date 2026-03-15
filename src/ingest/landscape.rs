@@ -209,25 +209,61 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
         match f.file_type {
             LandscapeFileType::Csv => {
                 let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_reader(content.as_slice());
+                let headers: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
+                
                 for result in rdr.records() {
-                    let _record = result?;
-                    normalized_rows.push(NormalizedLandscapeRow {
-                        contract_year: year,
-                        source_year: year,
-                        source_file: f.file_name.clone(),
-                        source_sheet: f.sheet.clone(),
-                        import_batch_id: import_batch_id.clone(),
-                        ..Default::default()
-                    });
+                    let record = result?;
+                    let mut map = std::collections::HashMap::new();
+                    for (i, val) in record.iter().enumerate() {
+                        if i < headers.len() {
+                            map.insert(headers[i].clone(), val.to_string());
+                        }
+                    }
+                    
+                    if let Some(normalized) = map_row_to_normalized(&map, year, &f.file_name, f.sheet.as_deref(), &import_batch_id) {
+                        normalized_rows.push(normalized);
+                    }
                 }
             }
             LandscapeFileType::Xls | LandscapeFileType::Xlsx | LandscapeFileType::Xlsb => {
-                log::info!("Ingesting Excel sheet: {:?}", f.sheet);
+                let cursor = std::io::Cursor::new(content);
+                let mut workbook = open_workbook_auto_from_rs(cursor)?;
+                
+                let sheet_name = match &f.sheet {
+                    Some(s) => s.clone(),
+                    None => workbook.sheet_names()[0].clone(),
+                };
+                
+                if let Ok(range) = workbook.worksheet_range(&sheet_name) {
+                    let mut rows_iter = range.rows();
+                    if let Some(header_row) = rows_iter.next() {
+                        let headers: Vec<String> = header_row.iter().map(|c| c.to_string()).collect();
+                        
+                        for row in rows_iter {
+                            let mut map = std::collections::HashMap::new();
+                            for (i, cell) in row.iter().enumerate() {
+                                if i < headers.len() {
+                                    map.insert(headers[i].clone(), cell.to_string());
+                                }
+                            }
+                            
+                            if let Some(normalized) = map_row_to_normalized(&map, year, &f.file_name, f.sheet.as_deref(), &import_batch_id) {
+                                normalized_rows.push(normalized);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    log::info!("Total rows normalized: {}", normalized_rows.len());
+    log::info!("Total rows normalized for year {}: {}", year, normalized_rows.len());
+
+    if !normalized_rows.is_empty() {
+        let output_path = store_dir.join("landscape").join("normalized").join(format!("year={}", year)).join("landscape.parquet");
+        crate::storage::parquet_store::save_landscape_data(&normalized_rows, &output_path)?;
+        log::info!("Saved normalized Landscape data to {}", output_path.display());
+    }
 
     if !manifest.imported_years.contains(&year) {
         manifest.imported_years.push(year);
@@ -299,4 +335,58 @@ fn infer_year(path: &str) -> i32 {
     }
 
     0
+}
+
+fn map_row_to_normalized(
+    row: &std::collections::HashMap<String, String>, 
+    year: i32, 
+    file_name: &str, 
+    sheet: Option<&str>, 
+    batch_id: &str
+) -> Option<NormalizedLandscapeRow> {
+    // Basic heuristics for column names that change over time
+    let find = |keys: &[&str]| {
+        for &k in keys {
+            if let Some(v) = row.get(k) { return Some(v); }
+            for (rk, rv) in row {
+                if rk.to_uppercase() == k.to_uppercase() { return Some(rv); }
+            }
+            for (rk, rv) in row {
+                if rk.to_uppercase().contains(&k.to_uppercase()) { return Some(rv); }
+            }
+        }
+        None
+    };
+
+    let contract_id = find(&["Contract ID", "Contract Number", "Contract#"])?;
+    let plan_id = find(&["Plan ID", "Plan Number", "Plan#"])?;
+    
+    if contract_id.is_empty() || plan_id.is_empty() { return None; }
+
+    let mut norm = NormalizedLandscapeRow {
+        contract_year: year,
+        state_abbreviation: find(&["State", "State Abbreviation"]).cloned().unwrap_or_default(),
+        county_name: find(&["County", "County Name"]).cloned().unwrap_or_default(),
+        contract_id: contract_id.clone(),
+        plan_id: plan_id.clone(),
+        parent_organization_name: find(&["Parent Organization", "Organization Name", "Parent Org"]).cloned().unwrap_or_default(),
+        plan_name: find(&["Plan Name", "Plan"]).cloned().unwrap_or_default(),
+        plan_type: find(&["Plan Type"]).cloned().unwrap_or_default(),
+        
+        source_year: year,
+        source_file: file_name.to_string(),
+        source_sheet: sheet.map(|s| s.to_string()),
+        import_batch_id: batch_id.to_string(),
+        ..Default::default()
+    };
+
+    if let Some(premium_str) = find(&["Monthly Consolidated Premium", "Monthly Premium", "Total Premium"]) {
+        norm.monthly_consolidated_premium = premium_str.replace('$', "").replace(',', "").trim().parse().ok();
+    }
+    
+    if let Some(star_str) = find(&["Overall Star Rating", "Star Rating", "Stars"]) {
+        norm.overall_star_rating = star_str.parse().ok();
+    }
+
+    Some(norm)
 }

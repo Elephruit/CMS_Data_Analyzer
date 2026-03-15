@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arrow::array::{UInt32Array, StringArray, BooleanArray, ArrayRef, AsArray, UInt64Array, ListArray, Array};
+use arrow::array::{UInt32Array, StringArray, BooleanArray, ArrayRef, AsArray, UInt64Array, ListArray, Array, Float64Array, Int32Array};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{UInt32Type, Field, DataType};
 use arrow::record_batch::RecordBatch;
@@ -207,6 +207,48 @@ pub fn save_series_partition(series_list: &[PlanCountySeries], path: &Path) -> R
         ("enrollments", Arc::new(enrollments_list) as ArrayRef),
     ])?;
 
+    let file = File::create(path)?;
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
+    writer.write(&batch)?;
+    writer.close()?;
+
+    Ok(())
+}
+
+pub fn save_landscape_data(rows: &[crate::model::NormalizedLandscapeRow], path: &Path) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let contract_years = Int32Array::from(rows.iter().map(|r| r.contract_year).collect::<Vec<_>>());
+    let states = StringArray::from(rows.iter().map(|r| r.state_abbreviation.clone()).collect::<Vec<_>>());
+    let counties = StringArray::from(rows.iter().map(|r| r.county_name.clone()).collect::<Vec<_>>());
+    let contract_ids = StringArray::from(rows.iter().map(|r| r.contract_id.clone()).collect::<Vec<_>>());
+    let plan_ids = StringArray::from(rows.iter().map(|r| r.plan_id.clone()).collect::<Vec<_>>());
+    let org_names = StringArray::from(rows.iter().map(|r| r.parent_organization_name.clone()).collect::<Vec<_>>());
+    let plan_names = StringArray::from(rows.iter().map(|r| r.plan_name.clone()).collect::<Vec<_>>());
+    let plan_types = StringArray::from(rows.iter().map(|r| r.plan_type.clone()).collect::<Vec<_>>());
+    
+    let premiums = Float64Array::from(rows.iter().map(|r| r.monthly_consolidated_premium).collect::<Vec<_>>());
+    let star_ratings = Float64Array::from(rows.iter().map(|r| r.overall_star_rating).collect::<Vec<_>>());
+    
+    let batch = RecordBatch::try_from_iter(vec![
+        ("contract_year", Arc::new(contract_years) as ArrayRef),
+        ("state", Arc::new(states) as ArrayRef),
+        ("county", Arc::new(counties) as ArrayRef),
+        ("contract_id", Arc::new(contract_ids) as ArrayRef),
+        ("plan_id", Arc::new(plan_ids) as ArrayRef),
+        ("parent_org", Arc::new(org_names) as ArrayRef),
+        ("plan_name", Arc::new(plan_names) as ArrayRef),
+        ("plan_type", Arc::new(plan_types) as ArrayRef),
+        ("premium", Arc::new(premiums) as ArrayRef),
+        ("star_rating", Arc::new(star_ratings) as ArrayRef),
+    ])?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = File::create(path)?;
     let props = WriterProperties::builder().build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;

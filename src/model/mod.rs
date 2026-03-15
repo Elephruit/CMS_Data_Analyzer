@@ -12,4 +12,4 @@ pub use county::*;
 pub use series::*;
 pub use ingest_row::*;
 pub use manifest::*;
-// pub use landscape::*;
+pub use landscape::*;
