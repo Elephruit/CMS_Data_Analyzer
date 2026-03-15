@@ -151,12 +151,6 @@ export const EnrollmentExplorer: React.FC = () => {
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Enrollment Explorer</h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Analyze market share and growth across different dimensions.
-          </p>
-        </div>
         <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 p-1 rounded-xl">
           {grains.map((g) => (
             <button

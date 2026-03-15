@@ -19,6 +19,7 @@ import {
   TrendingUp,
   PieChart as PieChartIcon,
   ArrowUpRight,
+  ArrowDownRight,
   Download,
   Settings2,
   X,
@@ -246,6 +247,36 @@ const OrgConfigPanel: React.FC<OrgConfigPanelProps> = ({ orgs, onClose }) => {
   );
 };
 
+// ── Sorted tooltip for Top 5 line chart ────────────────────────────────────────
+interface ChartTooltipProps {
+  active?: boolean;
+  payload?: Array<{ name: string; value: number; color: string }>;
+  label?: string;
+}
+
+const SortedLineTooltip: React.FC<ChartTooltipProps> = ({ active, payload, label }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const sorted = [...payload].sort((a, b) => b.value - a.value);
+  return (
+    <div style={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px', padding: '10px 14px', minWidth: 200 }}>
+      <div style={{ color: '#94a3b8', fontSize: 10, fontWeight: 900, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
+        {label}
+      </div>
+      {sorted.map((entry) => (
+        <div key={entry.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: entry.color, flexShrink: 0 }} />
+            <span style={{ color: '#cbd5e1', fontSize: 11 }}>{entry.name}</span>
+          </div>
+          <span style={{ color: '#f1f5f9', fontSize: 11, fontWeight: 700, fontFamily: 'monospace' }}>
+            {entry.value?.toLocaleString()}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 export const OrganizationAnalysis: React.FC = () => {
   const { filters } = useFilters();
@@ -275,6 +306,18 @@ export const OrganizationAnalysis: React.FC = () => {
 
   const top10 = useMemo(() => data?.organizations.slice(0, 10) || [], [data]);
   const top5 = useMemo(() => data?.organizations.slice(0, 5) || [], [data]);
+
+  // Derive prior month yyyymm from filters.analysisMonth
+  const priorMonthYyyymm = useMemo(() => {
+    const [year, month] = filters.analysisMonth.split('-').map(Number);
+    if (month === 1) return (year - 1) * 100 + 12;
+    return year * 100 + (month - 1);
+  }, [filters.analysisMonth]);
+
+  const currentMonthYyyymm = useMemo(() => {
+    const [year, month] = filters.analysisMonth.split('-').map(Number);
+    return year * 100 + month;
+  }, [filters.analysisMonth]);
 
   const concentration = useMemo(() => {
     if (!data) return { top3: 0, top5: 0, top10: 0 };
@@ -352,10 +395,6 @@ export const OrganizationAnalysis: React.FC = () => {
 
       {/* Page header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Parent Organization Analysis</h1>
-          <p className="text-slate-400 text-sm mt-1">Market dominance and organizational growth trends.</p>
-        </div>
         <div className="flex items-center gap-3">
           <div className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-3">
             <div className="w-2 h-2 bg-sky-500 rounded-full animate-pulse" />
@@ -462,14 +501,7 @@ export const OrganizationAnalysis: React.FC = () => {
                   tickFormatter={(val) => formatEnrollment(val)}
                   width={52}
                 />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px' }}
-                  itemStyle={{ fontSize: '11px' }}
-                  formatter={(val: any, rawKey: any) => [
-                    (val as number)?.toLocaleString(),
-                    getDisplayName(rawKey as string),
-                  ]}
-                />
+                <Tooltip content={<SortedLineTooltip />} />
                 <Legend
                   iconType="circle"
                   wrapperStyle={{ fontSize: '10px', paddingTop: '16px' }}
@@ -516,7 +548,7 @@ export const OrganizationAnalysis: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/50">
-              {data?.organizations.map((org, i) => {
+              {data?.organizations.filter(o => o.enrollment > 0).map((org, i) => {
                 const color = getColor(org.name, DEFAULT_COLORS[i % DEFAULT_COLORS.length]);
                 const displayName = getDisplayName(org.name);
                 return (
@@ -554,10 +586,20 @@ export const OrganizationAnalysis: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-1 text-emerald-400 font-bold text-xs">
-                        <ArrowUpRight className="w-3.5 h-3.5" />
-                        STABLE
-                      </div>
+                      {(() => {
+                        const curr = org.trend.find(t => t.month === currentMonthYyyymm)?.value ?? 0;
+                        const prior = org.trend.find(t => t.month === priorMonthYyyymm)?.value ?? 0;
+                        const change = curr - prior;
+                        const isPos = change > 0;
+                        const isNeg = change < 0;
+                        return (
+                          <div className={`flex items-center gap-1 font-bold text-xs font-mono ${isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-500'}`}>
+                            {isPos && <ArrowUpRight className="w-3.5 h-3.5" />}
+                            {isNeg && <ArrowDownRight className="w-3.5 h-3.5" />}
+                            {isPos ? '+' : ''}{change.toLocaleString()}
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 );

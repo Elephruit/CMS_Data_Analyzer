@@ -32,6 +32,7 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/query/geo-analysis", axum::routing::post(get_geo_analysis))
         .route("/api/query/growth-analytics", axum::routing::post(get_growth_analytics))
         .route("/api/query/plan-details", axum::routing::post(get_plan_details))
+        .route("/api/query/plan-list", axum::routing::post(get_plan_list))
 
         .route("/api/data/months", get(get_ingested_months))
         .route("/api/data/ingest", axum::routing::post(trigger_ingest))
@@ -235,6 +236,17 @@ async fn get_plan_details(State(engine): State<EngineState>, Json(payload): Json
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
     log::info!("get_plan_details took {:?}", start.elapsed());
+    res
+}
+
+async fn get_plan_list(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let engine = engine.read().await;
+    let start = std::time::Instant::now();
+    let res = match engine.get_plan_list(&payload) {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    };
+    log::info!("get_plan_list took {:?}", start.elapsed());
     res
 }
 

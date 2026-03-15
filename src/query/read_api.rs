@@ -722,6 +722,93 @@ impl QueryEngine {
         Ok(serde_json::json!({ "totalMarketEnrollment": total_market_enrollment, "latestMonth": current_yyyymm, "organizations": orgs_list }))
     }
 
+    pub fn get_plan_list(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
+        let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
+
+        // nk -> (contract_id, plan_id, plan_name, parent_org, plan_type, current_enrollment, prior_enrollment)
+        let mut nk_data: HashMap<String, (String, String, String, String, String, u64, u64)> = HashMap::new();
+
+        if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) =
+            (&self.plan_lookup, &self.county_lookup, &self.series_cache)
+        {
+            let mut matching_nks = HashSet::new();
+            for plan in plan_lookup.values() {
+                if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
+                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
+                }
+            }
+
+            let sel_states: HashSet<String> = filters["states"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let sel_counties: HashSet<String> = filters["counties"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+
+            for series in series_cache.values() {
+                let plan = match plan_lookup.get(&series.plan_key) { Some(p) => p, None => continue };
+                let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
+                if !matching_nks.contains(&nk) { continue; }
+
+                if !sel_states.is_empty() || !sel_counties.is_empty() {
+                    let county = match county_lookup.get(&series.county_key) { Some(c) => c, None => continue };
+                    if !sel_states.is_empty() && !sel_states.contains(&county.state_code) { continue; }
+                    if !sel_counties.is_empty() && !sel_counties.contains(&county.county_name) { continue; }
+                }
+
+                let entry = nk_data.entry(nk).or_insert_with(|| (
+                    plan.contract_id.clone(),
+                    plan.plan_id.clone(),
+                    plan.plan_name.clone(),
+                    plan.parent_org.clone(),
+                    plan.plan_type.clone(),
+                    0u64, 0u64,
+                ));
+
+                if self.is_plan_valid_for_month(plan, current_yyyymm) {
+                    // Prefer metadata from the version valid at the analysis month
+                    entry.2 = plan.plan_name.clone();
+                    entry.3 = plan.parent_org.clone();
+                    entry.4 = plan.plan_type.clone();
+                    if let Some(val) = series.get_enrollment(current_yyyymm) {
+                        entry.5 += val as u64;
+                    }
+                }
+                if self.is_plan_valid_for_month(plan, prior_yyyymm) {
+                    if let Some(val) = series.get_enrollment(prior_yyyymm) {
+                        entry.6 += val as u64;
+                    }
+                }
+            }
+        }
+
+        let mut rows: Vec<serde_json::Value> = nk_data
+            .into_values()
+            .filter(|e| e.5 > 0)
+            .map(|(contract_id, plan_id, plan_name, parent_org, plan_type, current, prior)| {
+                let mom_change = current as i64 - prior as i64;
+                serde_json::json!({
+                    "contractId": contract_id,
+                    "planId": plan_id,
+                    "planName": plan_name,
+                    "parentOrg": parent_org,
+                    "planType": plan_type,
+                    "enrollment": current,
+                    "priorEnrollment": prior,
+                    "momChange": mom_change,
+                })
+            })
+            .collect();
+
+        rows.sort_by_key(|r| std::cmp::Reverse(r["enrollment"].as_u64().unwrap_or(0)));
+
+        Ok(serde_json::json!({
+            "rows": rows,
+            "currentMonth": current_yyyymm,
+            "priorMonth": prior_yyyymm,
+        }))
+    }
+
     pub fn get_geo_analysis(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
         let (current_yyyymm, _) = self.get_analysis_months(filters);
         let mut state_data: HashMap<String, u64> = HashMap::new();
