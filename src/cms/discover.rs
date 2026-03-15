@@ -11,6 +11,56 @@ pub struct LandscapeDiscovery {
     pub historical_archive_url: Option<String>,
 }
 
+pub struct CrosswalkDiscovery {
+    pub year_links: std::collections::HashMap<i32, String>, // year -> page_url or zip_url
+}
+
+pub async fn discover_crosswalk_archives() -> Result<CrosswalkDiscovery> {
+    let landing_page = "https://www.cms.gov/data-research/statistics-trends-and-reports/medicare-advantagepart-d-contract-and-enrollment-data/plan-crosswalks";
+
+    log::info!("Discovering Crosswalk archives from: {}", landing_page);
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()?;
+
+    let response = client.get(landing_page).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to fetch Crosswalk landing page: HTTP {}", response.status()));
+    }
+
+    let html_content = response.text().await?;
+    let document = Html::parse_document(&html_content);
+    let link_selector = Selector::parse("a").unwrap();
+
+    let mut year_links = std::collections::HashMap::new();
+
+    for element in document.select(&link_selector) {
+        if let Some(href) = element.value().attr("href") {
+            let text = element.text().collect::<String>().trim().to_string();
+            // Look for links that look like "2025" or "CY 2025"
+            let re_year = regex::Regex::new(r"(20\d{2})").unwrap();
+            if let Some(cap) = re_year.captures(&text) {
+                let year: i32 = cap[1].parse().unwrap_or(0);
+                if year > 2000 && year < 2040 {
+                    let full_url = if href.starts_with("http") {
+                        href.to_string()
+                    } else {
+                        format!("https://www.cms.gov{}", href)
+                    };
+                    year_links.insert(year, full_url);
+                }
+            }
+        }
+    }
+
+    log::info!("Found crosswalk links for {} years", year_links.len());
+
+    Ok(CrosswalkDiscovery {
+        year_links,
+    })
+}
+
 pub async fn discover_landscape_archives() -> Result<LandscapeDiscovery> {
     let landing_page = "https://www.cms.gov/medicare/coverage/prescription-drug-coverage";
 

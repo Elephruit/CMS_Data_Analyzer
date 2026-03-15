@@ -257,3 +257,46 @@ pub fn save_landscape_data(rows: &[crate::model::NormalizedLandscapeRow], path: 
 
     Ok(())
 }
+
+pub fn save_crosswalk_data(rows: &[crate::model::NormalizedCrosswalkRow], path: &Path) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let crosswalk_years = Int32Array::from(rows.iter().map(|r| r.crosswalk_year).collect::<Vec<_>>());
+    let prev_contracts = StringArray::from(rows.iter().map(|r| r.previous_contract_id.clone()).collect::<Vec<_>>());
+    let prev_plans = StringArray::from(rows.iter().map(|r| r.previous_plan_id.clone()).collect::<Vec<_>>());
+    let prev_keys = StringArray::from(rows.iter().map(|r| r.previous_plan_key.clone()).collect::<Vec<_>>());
+    let prev_names = StringArray::from(rows.iter().map(|r| r.previous_plan_name.clone().unwrap_or_default()).collect::<Vec<_>>());
+    
+    let curr_contracts = StringArray::from(rows.iter().map(|r| r.current_contract_id.clone()).collect::<Vec<_>>());
+    let curr_plans = StringArray::from(rows.iter().map(|r| r.current_plan_id.clone()).collect::<Vec<_>>());
+    let curr_keys = StringArray::from(rows.iter().map(|r| r.current_plan_key.clone()).collect::<Vec<_>>());
+    let curr_names = StringArray::from(rows.iter().map(|r| r.current_plan_name.clone().unwrap_or_default()).collect::<Vec<_>>());
+    
+    let statuses = StringArray::from(rows.iter().map(|r| r.status.clone()).collect::<Vec<_>>());
+
+    let batch = RecordBatch::try_from_iter(vec![
+        ("crosswalk_year", Arc::new(crosswalk_years) as ArrayRef),
+        ("previous_contract_id", Arc::new(prev_contracts) as ArrayRef),
+        ("previous_plan_id", Arc::new(prev_plans) as ArrayRef),
+        ("previous_plan_key", Arc::new(prev_keys) as ArrayRef),
+        ("previous_plan_name", Arc::new(prev_names) as ArrayRef),
+        ("current_contract_id", Arc::new(curr_contracts) as ArrayRef),
+        ("current_plan_id", Arc::new(curr_plans) as ArrayRef),
+        ("current_plan_key", Arc::new(curr_keys) as ArrayRef),
+        ("current_plan_name", Arc::new(curr_names) as ArrayRef),
+        ("status", Arc::new(statuses) as ArrayRef),
+    ])?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(path)?;
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
+    writer.write(&batch)?;
+    writer.close()?;
+
+    Ok(())
+}

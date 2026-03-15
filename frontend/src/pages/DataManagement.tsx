@@ -40,6 +40,13 @@ export const DataManagement: React.FC = () => {
     available_years: number[]
   } | null>(null);
 
+  // Crosswalk state
+  const [crosswalkStatus, setCrosswalkStatus] = useState<{
+    status: string,
+    imported_years: number[],
+    available_years: number[]
+  } | null>(null);
+
   const refreshLandscape = async () => {
     try {
       const res = await fetch('http://127.0.0.1:3000/api/data/landscape/status');
@@ -52,11 +59,33 @@ export const DataManagement: React.FC = () => {
     }
   };
 
-  const handleDiscover = async () => {
+  const refreshCrosswalk = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:3000/api/data/crosswalk/status');
+      if (res.ok) {
+        const data = await res.json();
+        setCrosswalkStatus(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch crosswalk status', e);
+    }
+  };
+
+  const handleDiscoverLandscape = async () => {
     setLoading(true);
     try {
       const res = await fetch('http://127.0.0.1:3000/api/data/landscape/discover');
       if (res.ok) await refreshLandscape();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDiscoverCrosswalk = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('http://127.0.0.1:3000/api/data/crosswalk/discover');
+      if (res.ok) await refreshCrosswalk();
     } finally {
       setLoading(false);
     }
@@ -77,8 +106,24 @@ export const DataManagement: React.FC = () => {
     }
   };
 
+  const handleIngestCrosswalk = async (year: number) => {
+    const key = `crosswalk-${year}`;
+    setProcessing(prev => ({ ...prev, [key]: true }));
+    try {
+      const res = await fetch('http://127.0.0.1:3000/api/data/crosswalk/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ year }),
+      });
+      if (res.ok) await refreshCrosswalk();
+    } finally {
+      setProcessing(prev => ({ ...prev, [key]: false }));
+    }
+  };
+
   useEffect(() => {
     refreshLandscape();
+    refreshCrosswalk();
   }, []);
   
   const currentYear = new Date().getFullYear();
@@ -159,7 +204,7 @@ export const DataManagement: React.FC = () => {
     <div className="max-w-[1400px] mx-auto space-y-10 pb-24 px-4">
       <PageHeader 
         title="Analytical Store Management" 
-        subtitle="Manage and provision enrollment, landscape, and star rating data for multi-year analysis."
+        subtitle="Manage and provision enrollment, landscape, crosswalk, and star rating data for multi-year analysis."
         action={
           <div className="flex items-center gap-3">
             <button 
@@ -177,7 +222,7 @@ export const DataManagement: React.FC = () => {
             <button 
               onClick={() => {
                 setLoading(true);
-                Promise.all([refreshAvailableMonths(), refreshLandscape()]).finally(() => setLoading(false));
+                Promise.all([refreshAvailableMonths(), refreshLandscape(), refreshCrosswalk()]).finally(() => setLoading(false));
               }}
               className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs font-bold text-slate-300 transition-all"
             >
@@ -196,11 +241,11 @@ export const DataManagement: React.FC = () => {
               Annual Dataset Discovery
             </h3>
             <p className="text-sm text-slate-400 max-w-2xl">
-              Discover Landscape and Star Rating archives directly from CMS. This will scan the official CMS website, identify available ZIP archives, and prepare them for local ingestion.
+              Discover Landscape, Crosswalk, and Star Rating archives directly from CMS. This will scan official CMS websites, identify available ZIP archives, and prepare them for local ingestion.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-4 p-6 bg-slate-900/50 rounded-xl border border-slate-800">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-widest">
@@ -217,12 +262,37 @@ export const DataManagement: React.FC = () => {
                 Source: CMS Prescription Drug Coverage (Landscape ZIPs)
               </p>
               <button
-                onClick={handleDiscover}
+                onClick={handleDiscoverLandscape}
                 disabled={loading}
                 className="w-full py-2.5 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border border-sky-500/20 flex items-center justify-center gap-2"
               >
                 {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CloudDownload className="w-3.5 h-3.5" />}
-                {loading ? "Discovering..." : "Discover Landscape from CMS"}
+                {loading ? "Discovering..." : "Discover Landscape"}
+              </button>
+            </div>
+
+            <div className="space-y-4 p-6 bg-slate-900/50 rounded-xl border border-slate-800">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-widest">
+                  <RefreshCw className="w-4 h-4 text-purple-400" />
+                  Plan Crosswalk
+                </div>
+                {crosswalkStatus?.status === 'active' && (
+                  <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase rounded border border-emerald-500/20">
+                    Discovered
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Source: CMS Plan Crosswalks (2006-2025+)
+              </p>
+              <button
+                onClick={handleDiscoverCrosswalk}
+                disabled={loading}
+                className="w-full py-2.5 bg-purple-500/10 hover:bg-purple-500 text-purple-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border border-purple-500/20 flex items-center justify-center gap-2"
+              >
+                {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CloudDownload className="w-3.5 h-3.5" />}
+                {loading ? "Discovering..." : "Discover Crosswalk"}
               </button>
             </div>
 
@@ -252,6 +322,11 @@ export const DataManagement: React.FC = () => {
           const landscapeAvailable = landscapeStatus?.available_years.includes(year);
           const landscapeIngested = landscapeStatus?.imported_years.includes(year);
           const isLandscapeProcessing = processing[`landscape-${year}`];
+
+          // Crosswalk status for this year
+          const crosswalkAvailable = crosswalkStatus?.available_years.includes(year);
+          const crosswalkIngested = crosswalkStatus?.imported_years.includes(year);
+          const isCrosswalkProcessing = processing[`crosswalk-${year}`];
 
           return (
             <div key={year} className="space-y-6">
@@ -305,7 +380,7 @@ export const DataManagement: React.FC = () => {
                     <div className="flex flex-col">
                       <span className="text-[10px] font-black uppercase tracking-widest text-white">Landscape Dataset</span>
                       <span className="text-[9px] font-bold text-slate-500 uppercase">
-                        {landscapeIngested ? "Status: Populated" : landscapeAvailable ? "Status: Ready for Import" : "Status: Not Found in Archive"}
+                        {landscapeIngested ? "Status: Populated" : landscapeAvailable ? "Status: Ready for Import" : "Status: Not Found"}
                       </span>
                     </div>
                   </div>
@@ -327,11 +402,46 @@ export const DataManagement: React.FC = () => {
                       <span className="text-[9px] font-black uppercase tracking-widest">Active</span>
                     </div>
                   )}
+                </div>
 
-                  {!landscapeAvailable && !landscapeIngested && (
-                    <div className="flex items-center gap-1.5 text-slate-600">
-                      <Info className="w-3 h-3" />
-                      <span className="text-[9px] font-bold uppercase">Run Discovery</span>
+                <div className={cn(
+                  "p-4 rounded-xl border flex items-center justify-between transition-all",
+                  crosswalkIngested 
+                    ? "bg-emerald-500/5 border-emerald-500/20" 
+                    : crosswalkAvailable 
+                    ? "bg-purple-500/5 border-purple-500/20"
+                    : "bg-slate-900/40 border-slate-800 opacity-60"
+                )}>
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "p-2 rounded-lg",
+                      crosswalkIngested ? "bg-emerald-500/10 text-emerald-500" : "bg-purple-500/10 text-purple-400"
+                    )}>
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-white">Plan Crosswalk</span>
+                      <span className="text-[9px] font-bold text-slate-500 uppercase">
+                        {crosswalkIngested ? "Status: Populated" : crosswalkAvailable ? "Status: Ready for Import" : "Status: Not Found"}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {crosswalkAvailable && !crosswalkIngested && (
+                    <button 
+                      onClick={() => handleIngestCrosswalk(year)}
+                      disabled={isCrosswalkProcessing}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-purple-500 hover:bg-purple-400 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all shadow-lg shadow-purple-500/20 disabled:opacity-50"
+                    >
+                      {isCrosswalkProcessing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                      {isCrosswalkProcessing ? "Importing..." : "Download"}
+                    </button>
+                  )}
+                  
+                  {crosswalkIngested && (
+                    <div className="flex items-center gap-2 text-emerald-500">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span className="text-[9px] font-black uppercase tracking-widest">Active</span>
                     </div>
                   )}
                 </div>
@@ -342,16 +452,6 @@ export const DataManagement: React.FC = () => {
                   </div>
                   <div className="flex flex-col">
                     <span className="text-[10px] font-black uppercase tracking-widest text-white">Star Ratings</span>
-                    <span className="text-[9px] font-bold text-slate-500 uppercase">Status: Locked</span>
-                  </div>
-                </div>
-
-                <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/40 opacity-30 grayscale cursor-not-allowed flex items-center gap-3">
-                  <div className="p-2 bg-slate-500/10 text-slate-500 rounded-lg">
-                    <Calendar className="w-4 h-4" />
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-black uppercase tracking-widest text-white">Plan Benefits</span>
                     <span className="text-[9px] font-bold text-slate-500 uppercase">Status: Locked</span>
                   </div>
                 </div>

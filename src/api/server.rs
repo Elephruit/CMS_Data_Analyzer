@@ -3,6 +3,7 @@ use axum::{
     Router,
     Json,
     extract::State,
+    response::IntoResponse,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -42,6 +43,10 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/data/landscape/status", get(get_landscape_status))
         .route("/api/data/landscape/discover", get(trigger_landscape_discovery))
         .route("/api/data/landscape/ingest", axum::routing::post(trigger_landscape_ingest))
+
+        .route("/api/data/crosswalk/status", get(get_crosswalk_status))
+        .route("/api/data/crosswalk/discover", get(trigger_crosswalk_discovery))
+        .route("/api/data/crosswalk/ingest", axum::routing::post(trigger_crosswalk_ingest))
         
         // Serve frontend static files
         .fallback_service(ServeDir::new("frontend/dist"))
@@ -454,6 +459,74 @@ async fn trigger_landscape_ingest(Json(payload): Json<Value>) -> Result<Json<Val
     let store_dir = Path::new("store");
 
     match crate::ingest::landscape::ingest_landscape_year(year, force, store_dir).await {
+        Ok(_) => Ok(Json(json!({ "status": "success", "year": year }))),
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn get_crosswalk_status() -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    let manifest_path = store_dir.join("crosswalk").join("manifests").join("crosswalk_manifest.json");
+    
+    if !manifest_path.exists() {
+        return Ok(Json(json!({
+            "status": "not_discovered",
+            "imported_years": [],
+            "available_years": []
+        })));
+    }
+
+    match std::fs::File::open(&manifest_path) {
+        Ok(file) => {
+            let manifest: crate::model::CrosswalkManifest = serde_json::from_reader(file).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let years: std::collections::BTreeSet<i32> = manifest.files.iter().map(|f| f.year).filter(|&y| y > 0).collect();
+            
+            Ok(Json(json!({
+                "status": "active",
+                "imported_years": manifest.imported_years,
+                "available_years": years.into_iter().collect::<Vec<_>>()
+            })))
+        }
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn trigger_crosswalk_discovery() -> impl IntoResponse {
+    log::info!("Triggering programmatic Crosswalk discovery from CMS...");
+
+    match crate::ingest::crosswalk::discover_crosswalk_archives_full().await {
+        Ok(manifest) => {
+            let store_dir = Path::new("store");
+            let crosswalk_dir = store_dir.join("crosswalk");
+            if let Err(e) = std::fs::create_dir_all(&crosswalk_dir) {
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+            let manifest_path = crosswalk_dir.join("manifests").join("crosswalk_manifest.json");
+            if let Err(e) = std::fs::create_dir_all(manifest_path.parent().unwrap()) {
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+            
+            match std::fs::File::create(&manifest_path) {
+                Ok(file) => {
+                    if let Err(e) = serde_json::to_writer_pretty(file, &manifest) {
+                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                    }
+                },
+                Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+            
+            Json(json!({ "status": "success", "entries": manifest.files.len() })).into_response()
+        }
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn trigger_crosswalk_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let year = payload["year"].as_i64().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing year".to_string()))? as i32;
+    let force = payload["force"].as_bool().unwrap_or(false);
+    let store_dir = Path::new("store");
+
+    match crate::ingest::crosswalk::ingest_crosswalk_year(year, force, store_dir).await {
         Ok(_) => Ok(Json(json!({ "status": "success", "year": year }))),
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
