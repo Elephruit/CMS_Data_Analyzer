@@ -13,6 +13,41 @@ import {
 import { ArrowUpRight, ArrowDownRight, LayoutDashboard, Building2, Users, TrendingUp } from 'lucide-react';
 import { formatEnrollment, formatFullEnrollment, formatMonthYear, formatMonthShort } from '../utils/formatters';
 
+// ── Compact growth row used in the Enrollment Growth card ──────────────────────
+const GrowthMetricRow: React.FC<{
+  label: string;
+  compareLabel: string;
+  current: number | null;
+  prior: number | null;
+}> = ({ label, compareLabel, current, prior }) => {
+  if (current === null || prior === null) {
+    return (
+      <div className="flex items-center gap-2 h-6">
+        <span className="text-[10px] font-bold text-slate-600 w-8 shrink-0">{label}</span>
+        <span className="text-[10px] text-slate-700 flex-1">{compareLabel}</span>
+        <span className="text-xs font-mono text-slate-700">—</span>
+      </div>
+    );
+  }
+  const change = current - prior;
+  const pct = prior !== 0 ? (change / prior) * 100 : 0;
+  const isPos = change > 0;
+  const isNeg = change < 0;
+  const color = isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-500';
+  return (
+    <div className="flex items-center gap-2 h-6">
+      <span className="text-[10px] font-bold text-slate-500 w-8 shrink-0">{label}</span>
+      <span className="text-[10px] text-slate-600 flex-1 shrink-0">{compareLabel}</span>
+      <span className={`font-mono font-bold text-sm tabular-nums flex items-center gap-0.5 shrink-0 ${color}`}>
+        {isPos && <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />}
+        {isNeg && <ArrowDownRight className="w-3.5 h-3.5 shrink-0" />}
+        {isPos ? '+' : ''}{formatEnrollment(change)}
+        <span className="text-[10px] font-normal ml-1 opacity-75">({isPos ? '+' : ''}{pct.toFixed(1)}%)</span>
+      </span>
+    </div>
+  );
+};
+
 interface DashboardSummary {
   totalEnrollment: number;
   planCount: number;
@@ -205,85 +240,34 @@ export const Dashboard: React.FC = () => {
           loading={loading}
         />
 
-        {/* YoY / MoM Growth card */}
-        <Card className="flex flex-col justify-between">
-          <div className="flex items-center gap-2 mb-3">
-            <TrendingUp className="w-4 h-4 text-sky-500 shrink-0" />
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Enrollment Growth</span>
-          </div>
-          {loading || !growthMetrics ? (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="w-5 h-5 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {/* YoY */}
-              {(() => {
-                const { current, yoy } = growthMetrics;
-                if (current === null || yoy === null) {
-                  return (
-                    <div>
-                      <div className="text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-0.5">
-                        YoY vs {formatMonthShort(yoyMonth)}
-                      </div>
-                      <div className="text-sm font-bold text-slate-600">No prior year data</div>
-                    </div>
-                  );
-                }
-                const change = current - yoy;
-                const pct = yoy !== 0 ? (change / yoy) * 100 : 0;
-                const isPos = change > 0;
-                const isNeg = change < 0;
-                return (
-                  <div>
-                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">
-                      YoY vs {formatMonthShort(yoyMonth)}
-                    </div>
-                    <div className={`flex items-center gap-1 font-black font-mono text-base ${isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-400'}`}>
-                      {isPos && <ArrowUpRight className="w-4 h-4 shrink-0" />}
-                      {isNeg && <ArrowDownRight className="w-4 h-4 shrink-0" />}
-                      {isPos ? '+' : ''}{formatEnrollment(change)}
-                      <span className="text-xs font-bold ml-1">({isPos ? '+' : ''}{pct.toFixed(1)}%)</span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div className="border-t border-slate-800" />
-
-              {/* MoM */}
-              {(() => {
-                const { current, mom } = growthMetrics;
-                if (current === null || mom === null) {
-                  return (
-                    <div>
-                      <div className="text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-0.5">
-                        MoM vs {formatMonthShort(priorMonth)}
-                      </div>
-                      <div className="text-sm font-bold text-slate-600">No prior month data</div>
-                    </div>
-                  );
-                }
-                const change = current - mom;
-                const pct = mom !== 0 ? (change / mom) * 100 : 0;
-                const isPos = change > 0;
-                const isNeg = change < 0;
-                return (
-                  <div>
-                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">
-                      MoM vs {formatMonthShort(priorMonth)}
-                    </div>
-                    <div className={`flex items-center gap-1 font-black font-mono text-base ${isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-400'}`}>
-                      {isPos && <ArrowUpRight className="w-4 h-4 shrink-0" />}
-                      {isNeg && <ArrowDownRight className="w-4 h-4 shrink-0" />}
-                      {isPos ? '+' : ''}{formatEnrollment(change)}
-                      <span className="text-xs font-bold ml-1">({isPos ? '+' : ''}{pct.toFixed(1)}%)</span>
-                    </div>
-                  </div>
-                );
-              })()}
+        {/* YoY / MoM Growth card — compact, matches StatCard height */}
+        <Card className="relative group hover:border-slate-700 transition-all duration-300">
+          {(loading || !growthMetrics) && (
+            <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-2xl">
+              <div className="w-4 h-4 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
             </div>
           )}
+          <div className="flex items-start justify-between mb-3">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Enrollment Growth</p>
+            <div className="p-2 bg-slate-800 rounded-lg text-slate-400 group-hover:text-sky-400 transition-colors shrink-0">
+              <TrendingUp className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <GrowthMetricRow
+              label="YoY"
+              compareLabel={`vs ${formatMonthShort(yoyMonth)}`}
+              current={growthMetrics?.current ?? null}
+              prior={growthMetrics?.yoy ?? null}
+            />
+            <div className="border-t border-slate-800/60" />
+            <GrowthMetricRow
+              label="MoM"
+              compareLabel={`vs ${formatMonthShort(priorMonth)}`}
+              current={growthMetrics?.current ?? null}
+              prior={growthMetrics?.mom ?? null}
+            />
+          </div>
         </Card>
 
         <StatCard

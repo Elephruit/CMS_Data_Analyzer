@@ -724,17 +724,38 @@ impl QueryEngine {
 
     pub fn get_plan_list(&self, filters: &serde_json::Value) -> Result<serde_json::Value> {
         let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
+        let analysis_year = current_yyyymm / 100;
+        // AEP: Feb of analysis year vs Dec of prior year
+        let aep_feb_yyyymm = analysis_year * 100 + 2;
+        let aep_dec_yyyymm = (analysis_year - 1) * 100 + 12;
 
-        // nk -> (contract_id, plan_id, plan_name, parent_org, plan_type, current_enrollment, prior_enrollment)
-        let mut nk_data: HashMap<String, (String, String, String, String, String, u64, u64)> = HashMap::new();
+        struct PlanAccum {
+            contract_id: String,
+            plan_id: String,
+            plan_name: String,
+            parent_org: String,
+            plan_type: String,
+            current: u64,
+            prior: u64,
+            aep_feb: u64,
+            aep_dec: u64,
+            min_valid_from: u32,
+        }
+
+        let mut nk_data: HashMap<String, PlanAccum> = HashMap::new();
 
         if let (Some(plan_lookup), Some(county_lookup), Some(series_cache)) =
             (&self.plan_lookup, &self.county_lookup, &self.series_cache)
         {
+            // Build matching NKs and track earliest valid_from per NK (for "new plan" detection)
             let mut matching_nks = HashSet::new();
+            let mut min_valid_from: HashMap<String, u32> = HashMap::new();
             for plan in plan_lookup.values() {
                 if self.matches_plan_only_filters(plan, filters, current_yyyymm) {
-                    matching_nks.insert(format!("{}|{}", plan.contract_id, plan.plan_id));
+                    let nk = format!("{}|{}", plan.contract_id, plan.plan_id);
+                    matching_nks.insert(nk.clone());
+                    let e = min_valid_from.entry(nk).or_insert(u32::MAX);
+                    if plan.valid_from_month < *e { *e = plan.valid_from_month; }
                 }
             }
 
@@ -756,46 +777,60 @@ impl QueryEngine {
                     if !sel_counties.is_empty() && !sel_counties.contains(&county.county_name) { continue; }
                 }
 
-                let entry = nk_data.entry(nk).or_insert_with(|| (
-                    plan.contract_id.clone(),
-                    plan.plan_id.clone(),
-                    plan.plan_name.clone(),
-                    plan.parent_org.clone(),
-                    plan.plan_type.clone(),
-                    0u64, 0u64,
-                ));
+                let mvf = min_valid_from.get(&nk).copied().unwrap_or(0);
+                let entry = nk_data.entry(nk).or_insert_with(|| PlanAccum {
+                    contract_id: plan.contract_id.clone(),
+                    plan_id: plan.plan_id.clone(),
+                    plan_name: plan.plan_name.clone(),
+                    parent_org: plan.parent_org.clone(),
+                    plan_type: plan.plan_type.clone(),
+                    current: 0, prior: 0, aep_feb: 0, aep_dec: 0,
+                    min_valid_from: mvf,
+                });
 
                 if self.is_plan_valid_for_month(plan, current_yyyymm) {
-                    // Prefer metadata from the version valid at the analysis month
-                    entry.2 = plan.plan_name.clone();
-                    entry.3 = plan.parent_org.clone();
-                    entry.4 = plan.plan_type.clone();
-                    if let Some(val) = series.get_enrollment(current_yyyymm) {
-                        entry.5 += val as u64;
-                    }
+                    entry.plan_name = plan.plan_name.clone();
+                    entry.parent_org = plan.parent_org.clone();
+                    entry.plan_type = plan.plan_type.clone();
+                    if let Some(val) = series.get_enrollment(current_yyyymm) { entry.current += val as u64; }
                 }
                 if self.is_plan_valid_for_month(plan, prior_yyyymm) {
-                    if let Some(val) = series.get_enrollment(prior_yyyymm) {
-                        entry.6 += val as u64;
-                    }
+                    if let Some(val) = series.get_enrollment(prior_yyyymm) { entry.prior += val as u64; }
+                }
+                if self.is_plan_valid_for_month(plan, aep_feb_yyyymm) {
+                    if let Some(val) = series.get_enrollment(aep_feb_yyyymm) { entry.aep_feb += val as u64; }
+                }
+                if self.is_plan_valid_for_month(plan, aep_dec_yyyymm) {
+                    if let Some(val) = series.get_enrollment(aep_dec_yyyymm) { entry.aep_dec += val as u64; }
                 }
             }
         }
 
         let mut rows: Vec<serde_json::Value> = nk_data
             .into_values()
-            .filter(|e| e.5 > 0)
-            .map(|(contract_id, plan_id, plan_name, parent_org, plan_type, current, prior)| {
-                let mom_change = current as i64 - prior as i64;
+            .filter(|e| e.current > 0)
+            .map(|e| {
+                let mom_change = e.current as i64 - e.prior as i64;
+                let aep_growth = e.aep_feb as i64 - e.aep_dec as i64;
+                let aep_growth_pct = if e.aep_dec > 0 {
+                    (aep_growth as f64 / e.aep_dec as f64) * 100.0
+                } else if e.aep_feb > 0 { 100.0 } else { 0.0 };
+                // New = plan first appeared in the analysis year
+                let is_new = e.min_valid_from >= analysis_year * 100 + 1
+                    && e.min_valid_from < (analysis_year + 1) * 100 + 1;
                 serde_json::json!({
-                    "contractId": contract_id,
-                    "planId": plan_id,
-                    "planName": plan_name,
-                    "parentOrg": parent_org,
-                    "planType": plan_type,
-                    "enrollment": current,
-                    "priorEnrollment": prior,
+                    "contractId": e.contract_id,
+                    "planId": e.plan_id,
+                    "planName": e.plan_name,
+                    "parentOrg": e.parent_org,
+                    "planType": e.plan_type,
+                    "enrollment": e.current,
+                    "priorEnrollment": e.prior,
                     "momChange": mom_change,
+                    "aepGrowth": aep_growth,
+                    "aepGrowthPct": aep_growth_pct,
+                    "aepDecEnrollment": e.aep_dec,
+                    "isNew": is_new,
                 })
             })
             .collect();
@@ -806,6 +841,8 @@ impl QueryEngine {
             "rows": rows,
             "currentMonth": current_yyyymm,
             "priorMonth": prior_yyyymm,
+            "aepFebMonth": aep_feb_yyyymm,
+            "aepDecMonth": aep_dec_yyyymm,
         }))
     }
 

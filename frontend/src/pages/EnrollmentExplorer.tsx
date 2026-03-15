@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useFilters } from '../context/FilterContext';
 import { useOrgDisplay } from '../context/OrgDisplayContext';
 import { 
@@ -136,6 +136,7 @@ export const EnrollmentExplorer: React.FC = () => {
     return filteredAndSortedRows.slice(0, 10).map(row => {
       const displayName = grain === 'parentOrg' ? getDisplayName(row.name) : row.name;
       return {
+        rawName: row.name,
         name: displayName.length > 20 ? displayName.substring(0, 20) + '...' : displayName,
         fullName: displayName,
         current: row.current,
@@ -145,6 +146,12 @@ export const EnrollmentExplorer: React.FC = () => {
   }, [filteredAndSortedRows, grain, getDisplayName]);
 
   const COLORS = ['#0ea5e9', '#38bdf8', '#7dd3fc', '#bae6fd', '#e0f2fe'];
+
+  // Resolve color for a chart entry — uses configured brand color when in parentOrg grain
+  const getEntryColor = useCallback((rawName: string, fallbackIndex: number) => {
+    if (grain === 'parentOrg') return getColor(rawName, COLORS[fallbackIndex % COLORS.length]);
+    return COLORS[fallbackIndex % COLORS.length];
+  }, [grain, getColor]);
 
   const grains: { value: Grain; label: string; icon: any }[] = [
     { value: 'parentOrg', label: 'Organization', icon: Building2 },
@@ -201,8 +208,8 @@ export const EnrollmentExplorer: React.FC = () => {
                   formatter={(value: any) => [value?.toLocaleString() ?? '0', 'Enrollment']}
                 />
                 <Bar dataKey="current" radius={[0, 4, 4, 0]} barSize={24}>
-                  {chartData.map((_, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  {chartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={getEntryColor(entry.rawName, index)} />
                   ))}
                 </Bar>
               </BarChart>
@@ -222,8 +229,8 @@ export const EnrollmentExplorer: React.FC = () => {
                   paddingAngle={5}
                   dataKey="current"
                 >
-                  {chartData.map((_, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  {chartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={getEntryColor(entry.rawName, index)} />
                   ))}
                 </Pie>
                 <Tooltip 
@@ -236,7 +243,7 @@ export const EnrollmentExplorer: React.FC = () => {
           <div className="mt-4 grid grid-cols-2 gap-2">
             {chartData.slice(0, 4).map((entry, index) => (
               <div key={index} className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }}></div>
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getEntryColor(entry.rawName, index) }}></div>
                 <span className="text-[10px] text-slate-400 font-medium truncate">{entry.name}</span>
               </div>
             ))}

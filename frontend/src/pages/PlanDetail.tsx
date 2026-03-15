@@ -23,18 +23,26 @@ interface PlanRow {
   enrollment: number;
   priorEnrollment: number;
   momChange: number;
+  aepGrowth: number;
+  aepGrowthPct: number;
+  aepDecEnrollment: number;
+  isNew: boolean;
 }
 
 interface PlanListData {
   rows: PlanRow[];
   currentMonth: number;
   priorMonth: number;
+  aepFebMonth: number;
+  aepDecMonth: number;
 }
 
 interface TypeSubGroup {
   planType: string;
   totalEnrollment: number;
   totalMomChange: number;
+  totalAepGrowth: number;
+  totalAepDecEnrollment: number;
   plans: PlanRow[];
 }
 
@@ -42,6 +50,8 @@ interface OrgGroup {
   orgName: string;
   totalEnrollment: number;
   totalMomChange: number;
+  totalAepGrowth: number;
+  totalAepDecEnrollment: number;
   typeGroups: TypeSubGroup[];
 }
 
@@ -67,17 +77,33 @@ function niceChartDomain(values: number[]): [number, number] | ['auto', 'auto'] 
   ];
 }
 
-const MomBadge: React.FC<{ change: number; className?: string }> = ({ change, className = '' }) => {
+// ── Change badges ──────────────────────────────────────────────────────────────
+const ChangeBadge: React.FC<{ change: number; pct?: number; className?: string }> = ({ change, pct, className = '' }) => {
   const isPos = change > 0;
   const isNeg = change < 0;
+  if (change === 0 && (pct === undefined || pct === 0)) {
+    return <span className={`font-mono text-slate-600 tabular-nums ${className}`}>—</span>;
+  }
   return (
     <span className={`font-mono font-bold flex items-center gap-0.5 tabular-nums ${isPos ? 'text-emerald-400' : isNeg ? 'text-rose-400' : 'text-slate-500'} ${className}`}>
       {isPos && <ArrowUpRight className="w-3 h-3 shrink-0" />}
       {isNeg && <ArrowDownRight className="w-3 h-3 shrink-0" />}
       {isPos ? '+' : ''}{change.toLocaleString()}
+      {pct !== undefined && (
+        <span className="text-[10px] font-normal opacity-75 ml-0.5">
+          ({isPos ? '+' : ''}{pct.toFixed(1)}%)
+        </span>
+      )}
     </span>
   );
 };
+
+// Compact column header cell
+const ColHeader: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <th className={`px-3 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest whitespace-nowrap ${className}`}>
+    {children}
+  </th>
+);
 
 // ── Main component ─────────────────────────────────────────────────────────────
 export const PlanDetail: React.FC = () => {
@@ -131,6 +157,8 @@ export const PlanDetail: React.FC = () => {
             planType,
             totalEnrollment: plans.reduce((s, p) => s + p.enrollment, 0),
             totalMomChange: plans.reduce((s, p) => s + p.momChange, 0),
+            totalAepGrowth: plans.reduce((s, p) => s + p.aepGrowth, 0),
+            totalAepDecEnrollment: plans.reduce((s, p) => s + p.aepDecEnrollment, 0),
             plans: [...plans].sort((a, b) => b.enrollment - a.enrollment),
           }))
           .sort((a, b) => b.totalEnrollment - a.totalEnrollment);
@@ -139,10 +167,23 @@ export const PlanDetail: React.FC = () => {
           orgName,
           totalEnrollment: typeGroups.reduce((s, g) => s + g.totalEnrollment, 0),
           totalMomChange: typeGroups.reduce((s, g) => s + g.totalMomChange, 0),
+          totalAepGrowth: typeGroups.reduce((s, g) => s + g.totalAepGrowth, 0),
+          totalAepDecEnrollment: typeGroups.reduce((s, g) => s + g.totalAepDecEnrollment, 0),
           typeGroups,
         };
       })
       .sort((a, b) => b.totalEnrollment - a.totalEnrollment);
+  }, [data]);
+
+  // AEP column header label: "AEP (Feb YY vs Dec YY)"
+  const aepLabel = useMemo(() => {
+    if (!data) return 'AEP Growth';
+    const feb = data.aepFebMonth;
+    const dec = data.aepDecMonth;
+    if (!feb || !dec) return 'AEP Growth';
+    const febStr = formatMonthShort(feb.toString().replace(/(\d{4})(\d{2})/, '$1-$2'));
+    const decStr = formatMonthShort(dec.toString().replace(/(\d{4})(\d{2})/, '$1-$2'));
+    return `AEP  ${febStr} vs ${decStr}`;
   }, [data]);
 
   const toggleOrg = useCallback((orgName: string) => {
@@ -227,6 +268,8 @@ export const PlanDetail: React.FC = () => {
         const orgColor = getColor(org.orgName, DEFAULT_COLORS[oi % DEFAULT_COLORS.length]);
         const displayOrg = getDisplayName(org.orgName);
         const isOrgCollapsed = collapsedOrgs.has(org.orgName);
+        const orgAepPct = org.totalAepDecEnrollment > 0
+          ? (org.totalAepGrowth / org.totalAepDecEnrollment) * 100 : 0;
 
         return (
           <div key={org.orgName} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
@@ -237,19 +280,27 @@ export const PlanDetail: React.FC = () => {
               className="w-full flex items-center gap-3 px-5 py-4 hover:bg-slate-800/50 transition-colors text-left"
             >
               <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: orgColor }} />
-              <span className="font-bold text-sm text-white flex-1 truncate">{displayOrg}</span>
+              <span className="font-bold text-sm text-white flex-1 truncate min-w-0">{displayOrg}</span>
               {displayOrg !== org.orgName && (
-                <span className="text-[10px] text-slate-600 font-mono truncate max-w-[180px] hidden lg:block">
+                <span className="text-[10px] text-slate-600 font-mono truncate max-w-[160px] hidden lg:block shrink-0">
                   {org.orgName}
                 </span>
               )}
-              <span className="text-[10px] text-slate-600 shrink-0 ml-2">
+              <span className="text-[10px] text-slate-600 shrink-0">
                 {org.typeGroups.length} type{org.typeGroups.length !== 1 ? 's' : ''} · {data?.rows.filter(r => r.parentOrg === org.orgName).length} plans
               </span>
-              <span className="text-xs font-mono text-slate-300 shrink-0 min-w-[90px] text-right">
+              {/* Enrollment */}
+              <span className="text-xs font-mono text-slate-300 shrink-0 w-[90px] text-right">
                 {org.totalEnrollment.toLocaleString()}
               </span>
-              <MomBadge change={org.totalMomChange} className="text-xs shrink-0 min-w-[80px] justify-end" />
+              {/* MoM */}
+              <span className="shrink-0 w-[80px] flex justify-end">
+                <ChangeBadge change={org.totalMomChange} className="text-xs" />
+              </span>
+              {/* AEP */}
+              <span className="shrink-0 w-[110px] flex justify-end">
+                <ChangeBadge change={org.totalAepGrowth} pct={orgAepPct} className="text-xs" />
+              </span>
               {isOrgCollapsed
                 ? <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
                 : <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />
@@ -262,6 +313,8 @@ export const PlanDetail: React.FC = () => {
                 {org.typeGroups.map((tg) => {
                   const typeKey = `${org.orgName}||${tg.planType}`;
                   const isTypeCollapsed = collapsedTypeKeys.has(typeKey);
+                  const typeAepPct = tg.totalAepDecEnrollment > 0
+                    ? (tg.totalAepGrowth / tg.totalAepDecEnrollment) * 100 : 0;
 
                   return (
                     <div key={typeKey}>
@@ -276,10 +329,18 @@ export const PlanDetail: React.FC = () => {
                         <span className="text-[10px] text-slate-600 shrink-0">
                           {tg.plans.length} plan{tg.plans.length !== 1 ? 's' : ''}
                         </span>
-                        <span className="text-xs font-mono text-slate-400 shrink-0 min-w-[90px] text-right">
+                        {/* Enrollment */}
+                        <span className="text-xs font-mono text-slate-400 shrink-0 w-[90px] text-right">
                           {tg.totalEnrollment.toLocaleString()}
                         </span>
-                        <MomBadge change={tg.totalMomChange} className="text-xs shrink-0 min-w-[80px] justify-end" />
+                        {/* MoM */}
+                        <span className="shrink-0 w-[80px] flex justify-end">
+                          <ChangeBadge change={tg.totalMomChange} className="text-xs" />
+                        </span>
+                        {/* AEP */}
+                        <span className="shrink-0 w-[110px] flex justify-end">
+                          <ChangeBadge change={tg.totalAepGrowth} pct={typeAepPct} className="text-xs" />
+                        </span>
                         {isTypeCollapsed
                           ? <ChevronRight className="w-3.5 h-3.5 text-slate-600 shrink-0" />
                           : <ChevronDown className="w-3.5 h-3.5 text-slate-600 shrink-0" />
@@ -292,10 +353,11 @@ export const PlanDetail: React.FC = () => {
                           <table className="w-full text-left">
                             <thead>
                               <tr className="border-b border-slate-800/30">
-                                <th className="pl-16 pr-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest">Plan</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest">ID</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest text-right">Enrollment</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-slate-700 uppercase tracking-widest text-right">MoM</th>
+                                <ColHeader className="pl-16 pr-3">Plan</ColHeader>
+                                <ColHeader className="px-3">ID</ColHeader>
+                                <ColHeader className="px-3 text-right">Enrollment</ColHeader>
+                                <ColHeader className="px-3 text-right">MoM</ColHeader>
+                                <ColHeader className="px-3 text-right">{aepLabel}</ColHeader>
                               </tr>
                             </thead>
                             <tbody>
@@ -311,7 +373,8 @@ export const PlanDetail: React.FC = () => {
                                       onClick={() => togglePlan(plan)}
                                       className={`border-b border-slate-800/20 cursor-pointer transition-colors group ${isExpanded ? 'bg-slate-800/25' : 'hover:bg-slate-800/15'}`}
                                     >
-                                      <td className="pl-16 pr-4 py-2.5">
+                                      {/* Plan name + NEW badge */}
+                                      <td className="pl-16 pr-3 py-2.5">
                                         <div className="flex items-center gap-2">
                                           {isExpanded
                                             ? <ChevronDown className="w-3 h-3 text-sky-500 shrink-0" />
@@ -320,25 +383,39 @@ export const PlanDetail: React.FC = () => {
                                           <span className={`text-xs font-medium transition-colors ${isExpanded ? 'text-sky-400' : 'text-slate-300 group-hover:text-white'}`}>
                                             {plan.planName}
                                           </span>
+                                          {plan.isNew && (
+                                            <span className="text-[9px] font-bold px-1 py-px rounded bg-sky-500/15 text-sky-400 tracking-wide shrink-0">NEW</span>
+                                          )}
                                         </div>
                                       </td>
-                                      <td className="px-4 py-2.5">
+                                      {/* Contract·Plan ID */}
+                                      <td className="px-3 py-2.5">
                                         <span className="text-[10px] font-mono text-slate-600">{planKey}</span>
                                       </td>
-                                      <td className="px-4 py-2.5 text-right">
+                                      {/* Enrollment */}
+                                      <td className="px-3 py-2.5 text-right">
                                         <span className="text-xs font-mono font-bold text-slate-400">
                                           {plan.enrollment.toLocaleString()}
                                         </span>
                                       </td>
-                                      <td className="px-4 py-2.5 text-right">
-                                        <MomBadge change={plan.momChange} className="text-xs justify-end" />
+                                      {/* MoM */}
+                                      <td className="px-3 py-2.5 text-right">
+                                        <ChangeBadge change={plan.momChange} className="text-xs justify-end" />
+                                      </td>
+                                      {/* AEP Growth */}
+                                      <td className="px-3 py-2.5 text-right">
+                                        <ChangeBadge
+                                          change={plan.aepGrowth}
+                                          pct={plan.aepDecEnrollment > 0 ? plan.aepGrowthPct : undefined}
+                                          className="text-xs justify-end"
+                                        />
                                       </td>
                                     </tr>
 
                                     {/* Inline trend chart */}
                                     {isExpanded && (
                                       <tr className="bg-slate-950/50 border-b border-slate-800/20">
-                                        <td colSpan={4} className="pl-16 pr-6 py-4">
+                                        <td colSpan={5} className="pl-16 pr-6 py-4">
                                           {isLoadingTrend ? (
                                             <div className="flex items-center gap-3 h-[160px] justify-center">
                                               <div className="w-4 h-4 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
