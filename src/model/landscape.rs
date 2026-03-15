@@ -8,6 +8,8 @@ pub enum LandscapeFileType {
     Xls,
     #[serde(rename = "xlsx")]
     Xlsx,
+    #[serde(rename = "xlsb")]
+    Xlsb,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
