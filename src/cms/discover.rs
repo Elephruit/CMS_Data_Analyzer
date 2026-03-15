@@ -69,21 +69,36 @@ pub async fn discover_month(month: YearMonth) -> Result<CmsSourceInfo> {
 
     let zip_url = {
         let document = Html::parse_document(&html_content);
-        let zip_selector = Selector::parse("a[href$='.zip']").unwrap();
-        let mut url = None;
+        let link_selector = Selector::parse("a").unwrap();
 
-        for element in document.select(&zip_selector) {
+        // CMS sometimes appends suffixes like ".zip-0" to ZIP URLs, so we
+        // cannot use href$='.zip'. Instead scan all links for any href that
+        // contains ".zip" and prefer links that look like the enrollment file
+        // (contain "enrollment" or "cpsc" — contract/plan/state/county).
+        let mut best: Option<String> = None;
+        let mut fallback: Option<String> = None;
+
+        for element in document.select(&link_selector) {
             if let Some(href) = element.value().attr("href") {
+                if !href.contains(".zip") { continue; }
                 let full_url = if href.starts_with("http") {
                     href.to_string()
                 } else {
                     format!("https://www.cms.gov{}", href)
                 };
-                url = Some(full_url);
-                break;
+                let lower = href.to_lowercase();
+                if lower.contains("enrollment") || lower.contains("cpsc") {
+                    best = Some(full_url);
+                    break;
+                }
+                if fallback.is_none() {
+                    fallback = Some(full_url);
+                }
             }
         }
-        url.context(format!("Could not find ZIP link on page {}", month_page_url))?
+
+        best.or(fallback)
+            .context(format!("Could not find ZIP link on page {}", month_page_url))?
     };
 
     log::info!("Found ZIP URL: {}", zip_url);
