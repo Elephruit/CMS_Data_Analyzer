@@ -300,3 +300,44 @@ pub fn save_crosswalk_data(rows: &[crate::model::NormalizedCrosswalkRow], path: 
 
     Ok(())
 }
+
+pub fn load_crosswalk_data(path: &Path) -> Result<Vec<crate::model::NormalizedCrosswalkRow>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = File::open(path)?;
+    let builder = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let reader = builder.build()?;
+
+    let mut rows = Vec::new();
+    for batch in reader {
+        let batch = batch?;
+        let years = batch.column(0).as_primitive::<arrow::datatypes::Int32Type>();
+        let prev_contracts = batch.column(1).as_string::<i32>();
+        let prev_plans = batch.column(2).as_string::<i32>();
+        let prev_keys = batch.column(3).as_string::<i32>();
+        let prev_names = batch.column(4).as_string::<i32>();
+        let curr_contracts = batch.column(5).as_string::<i32>();
+        let curr_plans = batch.column(6).as_string::<i32>();
+        let curr_keys = batch.column(7).as_string::<i32>();
+        let curr_names = batch.column(8).as_string::<i32>();
+        let statuses = batch.column(9).as_string::<i32>();
+
+        for i in 0..batch.num_rows() {
+            rows.push(crate::model::NormalizedCrosswalkRow {
+                crosswalk_year: years.value(i),
+                previous_contract_id: prev_contracts.value(i).to_string(),
+                previous_plan_id: prev_plans.value(i).to_string(),
+                previous_plan_key: prev_keys.value(i).to_string(),
+                previous_plan_name: Some(prev_names.value(i).to_string()),
+                current_contract_id: curr_contracts.value(i).to_string(),
+                current_plan_id: curr_plans.value(i).to_string(),
+                current_plan_key: curr_keys.value(i).to_string(),
+                current_plan_name: Some(curr_names.value(i).to_string()),
+                status: statuses.value(i).to_string(),
+                ..Default::default()
+            });
+        }
+    }
+    Ok(rows)
+}
