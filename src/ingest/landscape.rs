@@ -26,10 +26,26 @@ pub async fn process_archive_from_url(url: &str, _raw_dir: &Path) -> Result<Vec<
         response.bytes().await?
     };
 
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = ZipArchive::new(cursor)?;
-    
     let mut discovered_files = Vec::new();
+    scan_zip_bytes_recursive(&bytes, &mut discovered_files, "")?;
+
+    // De-duplicate discovered files by (year, file_name, sheet)
+    // Sometimes the same file might appear in multiple archives or nested ZIPs
+    discovered_files.sort_by_key(|f| (f.year, f.file_name.clone(), f.sheet.clone()));
+    discovered_files.dedup_by_key(|f| (f.year, f.file_name.clone(), f.sheet.clone()));
+
+    Ok(discovered_files)
+}
+
+fn scan_zip_bytes_recursive(bytes: &[u8], discovered: &mut Vec<LandscapeFileDiscovery>, parent_path: &str) -> Result<()> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = match ZipArchive::new(cursor) {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("Failed to open ZIP at {}: {}", parent_path, e);
+            return Ok(());
+        }
+    };
 
     for i in 0..archive.len() {
         let mut zip_file = archive.by_index(i)?;
@@ -39,49 +55,37 @@ pub async fn process_archive_from_url(url: &str, _raw_dir: &Path) -> Result<Vec<
             continue;
         }
 
+        let full_name = if parent_path.is_empty() { name.clone() } else { format!("{}/{}", parent_path, name) };
         let extension = Path::new(&name).extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
         
         match extension.as_str() {
             "zip" => {
-                // Nested ZIP! (common in CMS historical archives)
                 let mut nested_content = Vec::new();
                 zip_file.read_to_end(&mut nested_content)?;
-                let nested_cursor = std::io::Cursor::new(nested_content);
-                match ZipArchive::new(nested_cursor) {
-                    Ok(mut nested_archive) => {
-                        for j in 0..nested_archive.len() {
-                            let mut inner_file = nested_archive.by_index(j)?;
-                            let inner_name = inner_file.name().to_string();
-                            if inner_file.is_dir() || inner_name.contains("__MACOSX") || inner_name.ends_with(".DS_Store") {
-                                continue;
-                            }
-                            
-                            match process_zip_entry(&mut inner_file, &inner_name) {
-                                Ok(Some(disc)) => discovered_files.push(disc),
-                                Ok(None) => {},
-                                Err(e) => log::warn!("Failed to evaluate nested file {} in {}: {}", inner_name, name, e),
-                            }
-                        }
-                    },
-                    Err(e) => log::warn!("Failed to open nested ZIP {}: {}", name, e),
-                }
+                scan_zip_bytes_recursive(&nested_content, discovered, &full_name)?;
             }
             "csv" | "xlsx" | "xlsm" | "xlsb" | "xls" => {
-                match process_zip_entry(&mut zip_file, &name) {
-                    Ok(Some(disc)) => discovered_files.push(disc),
+                match process_zip_entry(&mut zip_file, &full_name) {
+                    Ok(Some(disc)) => {
+                        if disc.year > 0 {
+                            discovered.push(disc);
+                        } else {
+                            log::debug!("Skipping file with unidentifiable year: {}", full_name);
+                        }
+                    },
                     Ok(None) => {},
-                    Err(e) => log::warn!("Failed to evaluate file {}: {}", name, e),
+                    Err(e) => log::warn!("Failed to evaluate file {}: {}", full_name, e),
                 }
             }
             _ => {}
         }
     }
 
-    Ok(discovered_files)
+    Ok(())
 }
 
-fn process_zip_entry(file: &mut zip::read::ZipFile, name: &str) -> Result<Option<LandscapeFileDiscovery>> {
-    let extension = Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+fn process_zip_entry(file: &mut zip::read::ZipFile, full_name: &str) -> Result<Option<LandscapeFileDiscovery>> {
+    let extension = Path::new(full_name).extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
     
     match extension.as_str() {
         "csv" => {
@@ -92,11 +96,11 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, name: &str) -> Result<Option
                 .from_reader(content.as_slice());
             
             let headers = rdr.headers()?.iter().map(|s| s.to_string()).collect();
-            let year = infer_year(name);
+            let year = infer_year(full_name);
             
             Ok(Some(LandscapeFileDiscovery {
                 year,
-                file_name: name.to_string(),
+                file_name: full_name.to_string(),
                 sheet: None,
                 file_type: LandscapeFileType::Csv,
                 columns: headers,
@@ -110,7 +114,7 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, name: &str) -> Result<Option
             
             let mut workbook = match open_workbook_auto_from_rs(cursor) {
                 Ok(wb) => wb,
-                Err(e) => return Err(anyhow::anyhow!("Failed to open Excel file {}: {}", name, e)),
+                Err(e) => return Err(anyhow::anyhow!("Failed to open Excel file {}: {}", full_name, e)),
             };
 
             let sheet_names = workbook.sheet_names().to_owned();
@@ -118,8 +122,14 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, name: &str) -> Result<Option
                 return Ok(None);
             }
 
-            // Heuristic: prefer sheets with "MA-PD" or "Landscape" or just the first one
-            let sheet_name = sheet_names.iter().find(|s| s.contains("MA-PD") || s.contains("Landscape")).cloned().unwrap_or_else(|| sheet_names[0].clone());
+            // Heuristic: prefer sheets with "MA-PD" or "Landscape" or "Enrollment" or just the first one
+            let sheet_name = sheet_names.iter()
+                .find(|s| {
+                    let s_up = s.to_uppercase();
+                    s_up.contains("MA-PD") || s_up.contains("LANDSCAPE") || s_up.contains("PLAN")
+                })
+                .cloned()
+                .unwrap_or_else(|| sheet_names[0].clone());
             
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
                 let headers = range.rows().next().map(|row| {
@@ -133,8 +143,8 @@ fn process_zip_entry(file: &mut zip::read::ZipFile, name: &str) -> Result<Option
                 };
 
                 Ok(Some(LandscapeFileDiscovery {
-                    year: infer_year(name),
-                    file_name: name.to_string(),
+                    year: infer_year(full_name),
+                    file_name: full_name.to_string(),
                     sheet: Some(sheet_name),
                     file_type,
                     columns: headers,
@@ -184,20 +194,20 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
     let mut normalized_rows = Vec::new();
     let import_batch_id = uuid::Uuid::new_v4().to_string();
 
-    let archive_file = File::open(archive_path)?;
-    let mut archive = ZipArchive::new(archive_file)?;
-
     for f in files_to_process {
-        let mut zip_file = archive.by_name(&f.file_name)?;
-        let mut content = Vec::new();
-        zip_file.read_to_end(&mut content)?;
+        let content = match get_recursive_file_content(archive_path, &f.file_name) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Could not find file {} in archive: {}", f.file_name, e);
+                continue;
+            }
+        };
 
         match f.file_type {
             LandscapeFileType::Csv => {
                 let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_reader(content.as_slice());
                 for result in rdr.records() {
                     let _record = result?;
-                    // Placeholder: Actual normalization based on columns
                     normalized_rows.push(NormalizedLandscapeRow {
                         contract_year: year,
                         source_year: year,
@@ -209,7 +219,6 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
                 }
             }
             LandscapeFileType::Xls | LandscapeFileType::Xlsx | LandscapeFileType::Xlsb => {
-                // Implementation for Excel
                 log::info!("Ingesting Excel sheet: {:?}", f.sheet);
             }
         }
@@ -217,8 +226,6 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
 
     log::info!("Total rows normalized: {}", normalized_rows.len());
 
-    // Placeholder: Save normalized_rows to Parquet
-    
     if !manifest.imported_years.contains(&year) {
         manifest.imported_years.push(year);
         manifest.imported_years.sort();
@@ -229,10 +236,58 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
     Ok(())
 }
 
-fn infer_year(name: &str) -> i32 {
-    let re = regex::Regex::new(r"20\d{2}").unwrap();
-    if let Some(cap) = re.captures(name) {
-        return cap[0].parse().unwrap_or(0);
+fn get_recursive_file_content(archive_path: &Path, target_full_path: &str) -> Result<Vec<u8>> {
+    let file = File::open(archive_path)?;
+    let mut archive = ZipArchive::new(file)?;
+    
+    // Path looks like "Parent.zip/Child.zip/File.csv"
+    let parts: Vec<&str> = target_full_path.split('/').collect();
+    
+    let mut current_bytes = Vec::new();
+    
+    // First part must be in the main archive
+    let mut zip_file = archive.by_name(parts[0])?;
+    zip_file.read_to_end(&mut current_bytes)?;
+    
+    for i in 1..parts.len() {
+        let cursor = std::io::Cursor::new(current_bytes);
+        let mut inner_archive = ZipArchive::new(cursor)?;
+        let mut inner_file = inner_archive.by_name(parts[i])?;
+        let mut next_bytes = Vec::new();
+        inner_file.read_to_end(&mut next_bytes)?;
+        current_bytes = next_bytes;
     }
+    
+    Ok(current_bytes)
+}
+
+fn infer_year(name: &str) -> i32 {
+    let name_up = name.to_uppercase();
+    
+    // 1. Look for 4-digit years starting with 20 (e.g. 2006, 2025)
+    let re4 = regex::Regex::new(r"20(\d{2})").unwrap();
+    if let Some(cap) = re4.captures(&name_up) {
+        return format!("20{}", &cap[1]).parse().unwrap_or(0);
+    }
+
+    // 2. Look for CY followed by 2 or 4 digits
+    let re_cy = regex::Regex::new(r"CY(\d{2,4})").unwrap();
+    if let Some(cap) = re_cy.captures(&name_up) {
+        let yr_str = &cap[1];
+        if yr_str.len() == 2 {
+            let yr: i32 = yr_str.parse().unwrap_or(0);
+            if yr > 50 { return 1900 + yr; }
+            else { return 2000 + yr; }
+        } else if yr_str.len() == 4 {
+            return yr_str.parse().unwrap_or(0);
+        }
+    }
+
+    // 3. Fallback to any 4 digits
+    let re_any4 = regex::Regex::new(r"(\d{4})").unwrap();
+    if let Some(cap) = re_any4.captures(&name_up) {
+        return cap[1].parse().unwrap_or(0);
+    }
+
     0
 }
