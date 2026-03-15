@@ -39,7 +39,6 @@ export const DataManagement: React.FC = () => {
     imported_years: number[],
     available_years: number[]
   } | null>(null);
-  const [archivePath, setArchivePath] = useState('/data/landscape/landscape_historical.zip');
 
   const refreshLandscape = async () => {
     try {
@@ -56,11 +55,7 @@ export const DataManagement: React.FC = () => {
   const handleDiscover = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://127.0.0.1:3000/api/data/landscape/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ archive_path: archivePath }),
-      });
+      const res = await fetch('http://127.0.0.1:3000/api/data/landscape/discover');
       if (res.ok) await refreshLandscape();
     } finally {
       setLoading(false);
@@ -198,10 +193,10 @@ export const DataManagement: React.FC = () => {
           <div className="flex flex-col gap-2">
             <h3 className="text-lg font-black text-white tracking-tight uppercase flex items-center gap-2">
               <Settings2 className="w-5 h-5 text-sky-500" />
-              Historical Archive Configuration
+              Annual Dataset Discovery
             </h3>
             <p className="text-sm text-slate-400 max-w-2xl">
-              Configure the source paths for historical data archives. Run discovery to evaluate the structure of annual files before ingestion.
+              Discover Landscape and Star Rating archives directly from CMS. This will scan the official CMS website, identify available ZIP archives, and prepare them for local ingestion.
             </p>
           </div>
 
@@ -210,7 +205,7 @@ export const DataManagement: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-widest">
                   <FileText className="w-4 h-4 text-sky-400" />
-                  Landscape Archive
+                  Landscape Dataset
                 </div>
                 {landscapeStatus?.status === 'active' && (
                   <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase rounded border border-emerald-500/20">
@@ -218,33 +213,27 @@ export const DataManagement: React.FC = () => {
                   </span>
                 )}
               </div>
-              <input 
-                type="text" 
-                value={archivePath}
-                onChange={(e) => setArchivePath(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 outline-none transition-all"
-                placeholder="/path/to/landscape_historical.zip"
-              />
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Source: CMS Prescription Drug Coverage (Landscape ZIPs)
+              </p>
               <button
                 onClick={handleDiscover}
                 disabled={loading}
-                className="w-full py-2.5 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border border-sky-500/20"
+                className="w-full py-2.5 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border border-sky-500/20 flex items-center justify-center gap-2"
               >
-                {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin mx-auto" /> : "Run Landscape Discovery"}
+                {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CloudDownload className="w-3.5 h-3.5" />}
+                {loading ? "Discovering..." : "Discover Landscape from CMS"}
               </button>
             </div>
 
             <div className="space-y-4 p-6 bg-slate-900/50 rounded-xl border border-slate-800 opacity-50 grayscale cursor-not-allowed">
               <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-widest">
                 <Star className="w-4 h-4 text-amber-400" />
-                Star Ratings Archive
+                Star Ratings Dataset
               </div>
-              <input 
-                type="text" 
-                disabled
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-xs text-white font-mono outline-none"
-                placeholder="/path/to/stars_historical.zip"
-              />
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Source: CMS Part C and D Performance Data
+              </p>
               <button disabled className="w-full py-2.5 bg-slate-800 text-slate-500 text-[10px] font-black uppercase tracking-widest rounded-lg border border-slate-700">
                 Discovery Locked
               </button>

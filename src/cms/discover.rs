@@ -6,6 +6,63 @@ pub struct CmsSourceInfo {
     pub zip_url: String,
 }
 
+pub struct LandscapeDiscovery {
+    pub standalone_zip_url: Option<String>,
+    pub historical_archive_url: Option<String>,
+}
+
+pub async fn discover_landscape_archives() -> Result<LandscapeDiscovery> {
+    let landing_page = "https://www.cms.gov/medicare/coverage/prescription-drug-coverage";
+
+    log::info!("Discovering Landscape archives from: {}", landing_page);
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()?;
+
+    let response = client.get(landing_page).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to fetch Landscape landing page: HTTP {}", response.status()));
+    }
+
+    let html_content = response.text().await?;
+    let document = Html::parse_document(&html_content);
+    let link_selector = Selector::parse("a").unwrap();
+
+    let mut standalone_zip_url = None;
+    let mut historical_archive_url = None;
+
+    for element in document.select(&link_selector) {
+        if let Some(href) = element.value().attr("href") {
+            let lower = href.to_lowercase();
+            if !lower.contains("landscape") || !lower.contains(".zip") {
+                continue;
+            }
+
+            let full_url = if href.starts_with("http") {
+                href.to_string()
+            } else {
+                format!("https://www.cms.gov{}", href)
+            };
+
+            // Detect historical archive (e.g., cy2006-cy2025)
+            if lower.contains("historical") || (lower.contains("2006") && lower.contains("20")) {
+                log::info!("Found historical Landscape archive: {}", full_url);
+                historical_archive_url = Some(full_url);
+            } else {
+                // Standalone (e.g., cy2026)
+                log::info!("Found standalone Landscape ZIP: {}", full_url);
+                standalone_zip_url = Some(full_url);
+            }
+        }
+    }
+
+    Ok(LandscapeDiscovery {
+        standalone_zip_url,
+        historical_archive_url,
+    })
+}
+
 pub async fn discover_month(month: YearMonth) -> Result<CmsSourceInfo> {
     let landing_page = "https://www.cms.gov/data-research/statistics-trends-and-reports/medicare-advantagepart-d-contract-and-enrollment-data/monthly-enrollment-contract/plan/state/county";
 

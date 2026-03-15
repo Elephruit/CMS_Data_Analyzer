@@ -40,7 +40,7 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/data/delete-year", axum::routing::post(delete_year))
 
         .route("/api/data/landscape/status", get(get_landscape_status))
-        .route("/api/data/landscape/discover", axum::routing::post(trigger_landscape_discovery))
+        .route("/api/data/landscape/discover", get(trigger_landscape_discovery))
         .route("/api/data/landscape/ingest", axum::routing::post(trigger_landscape_ingest))
         
         // Serve frontend static files
@@ -382,29 +382,62 @@ async fn get_landscape_status() -> Result<Json<Value>, (axum::http::StatusCode, 
     }
 }
 
-async fn trigger_landscape_discovery(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    let archive_path_str = payload["archive_path"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing archive_path".to_string()))?;
-    let archive_path = Path::new(archive_path_str);
+async fn trigger_landscape_discovery() -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    log::info!("Triggering programmatic Landscape discovery from CMS...");
 
-    if !archive_path.exists() {
-        return Err((axum::http::StatusCode::BAD_REQUEST, format!("Archive not found at {}", archive_path_str)));
-    }
+    let discovery = match crate::cms::discover::discover_landscape_archives().await {
+        Ok(d) => d,
+        Err(e) => return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    };
 
-    match crate::ingest::landscape::discover_landscape_files(archive_path).await {
-        Ok(manifest) => {
-            let store_dir = Path::new("store");
-            let landscape_dir = store_dir.join("landscape");
-            std::fs::create_dir_all(&landscape_dir).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let manifest_path = landscape_dir.join("manifests").join("landscape_manifest.json");
-            std::fs::create_dir_all(manifest_path.parent().unwrap()).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            
-            let file = std::fs::File::create(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            serde_json::to_writer_pretty(file, &manifest).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            
-            Ok(Json(json!({ "status": "success", "entries": manifest.files.len() })))
+    let store_dir = Path::new("store");
+    let landscape_dir = store_dir.join("landscape");
+    let raw_dir = landscape_dir.join("raw");
+    std::fs::create_dir_all(&raw_dir).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut all_files = Vec::new();
+
+    // 1. Process Standalone ZIP (e.g. CY2026)
+    if let Some(standalone_url) = discovery.standalone_zip_url {
+        log::info!("Fetching standalone Landscape ZIP: {}", standalone_url);
+        match crate::ingest::landscape::process_archive_from_url(&standalone_url, &raw_dir).await {
+            Ok(mut files) => all_files.append(&mut files),
+            Err(e) => log::warn!("Failed to process standalone ZIP {}: {}", standalone_url, e),
         }
-        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
+
+    // 2. Process Historical Archive (e.g. CY2006-CY2025)
+    if let Some(historical_url) = discovery.historical_archive_url {
+        log::info!("Fetching historical Landscape archive: {}", historical_url);
+        match crate::ingest::landscape::process_archive_from_url(&historical_url, &raw_dir).await {
+            Ok(mut files) => all_files.append(&mut files),
+            Err(e) => log::warn!("Failed to process historical archive {}: {}", historical_url, e),
+        }
+    }
+
+    if all_files.is_empty() {
+        return Err((axum::http::StatusCode::NOT_FOUND, "No Landscape files discovered".to_string()));
+    }
+
+    let manifest_path = landscape_dir.join("manifests").join("landscape_manifest.json");
+    std::fs::create_dir_all(manifest_path.parent().unwrap()).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    // Load existing manifest to preserve imported_years
+    let mut manifest = if manifest_path.exists() {
+        let file = std::fs::File::open(&manifest_path).unwrap();
+        serde_json::from_reader(file).unwrap_or(crate::model::landscape::LandscapeManifest::default())
+    } else {
+        crate::model::landscape::LandscapeManifest::default()
+    };
+
+    manifest.files = all_files;
+    // Note: archive_path in manifest might need adjustment if we want to store multiple source archives, 
+    // but for now we'll just store the raw files locally and point there if needed.
+    
+    let file = std::fs::File::create(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    serde_json::to_writer_pretty(file, &manifest).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    Ok(Json(json!({ "status": "success", "entries": manifest.files.len() })))
 }
 
 async fn trigger_landscape_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
