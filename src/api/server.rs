@@ -38,6 +38,11 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/data/ingest", axum::routing::post(trigger_ingest))
         .route("/api/data/delete-month", axum::routing::post(delete_month))
         .route("/api/data/delete-year", axum::routing::post(delete_year))
+
+        .route("/api/data/landscape/status", get(get_landscape_status))
+        .route("/api/data/landscape/discover", axum::routing::post(trigger_landscape_discovery))
+        .route("/api/data/landscape/ingest", axum::routing::post(trigger_landscape_ingest))
+        
         // Serve frontend static files
         .fallback_service(ServeDir::new("frontend/dist"))
         .layer(CorsLayer::permissive())
@@ -348,4 +353,67 @@ async fn delete_year(State(engine): State<EngineState>, Json(payload): Json<Valu
     }
 
     Ok(Json(json!({ "status": "deleted", "year": year })))
+}
+
+async fn get_landscape_status() -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    let manifest_path = store_dir.join("landscape").join("manifests").join("landscape_manifest.json");
+    
+    if !manifest_path.exists() {
+        return Ok(Json(json!({
+            "status": "not_discovered",
+            "imported_years": [],
+            "available_years": []
+        })));
+    }
+
+    match std::fs::File::open(&manifest_path) {
+        Ok(file) => {
+            let manifest: crate::model::landscape::LandscapeManifest = serde_json::from_reader(file).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let years: std::collections::BTreeSet<i32> = manifest.files.iter().map(|f| f.year).filter(|&y| y > 0).collect();
+            
+            Ok(Json(json!({
+                "status": "active",
+                "imported_years": manifest.imported_years,
+                "available_years": years.into_iter().collect::<Vec<_>>()
+            })))
+        }
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn trigger_landscape_discovery(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let archive_path_str = payload["archive_path"].as_str().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing archive_path".to_string()))?;
+    let archive_path = Path::new(archive_path_str);
+
+    if !archive_path.exists() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, format!("Archive not found at {}", archive_path_str)));
+    }
+
+    match crate::ingest::landscape::discover_landscape_files(archive_path).await {
+        Ok(manifest) => {
+            let store_dir = Path::new("store");
+            let landscape_dir = store_dir.join("landscape");
+            std::fs::create_dir_all(&landscape_dir).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let manifest_path = landscape_dir.join("manifests").join("landscape_manifest.json");
+            std::fs::create_dir_all(manifest_path.parent().unwrap()).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            
+            let file = std::fs::File::create(&manifest_path).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            serde_json::to_writer_pretty(file, &manifest).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            
+            Ok(Json(json!({ "status": "success", "entries": manifest.files.len() })))
+        }
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn trigger_landscape_ingest(Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let year = payload["year"].as_i64().ok_or((axum::http::StatusCode::BAD_REQUEST, "Missing year".to_string()))? as i32;
+    let force = payload["force"].as_bool().unwrap_or(false);
+    let store_dir = Path::new("store");
+
+    match crate::ingest::landscape::ingest_landscape_year(year, force, store_dir).await {
+        Ok(_) => Ok(Json(json!({ "status": "success", "year": year }))),
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 }

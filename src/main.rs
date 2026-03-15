@@ -302,6 +302,64 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}|{}: {} (Org: {}, Type: {}, Key: {})", plan.contract_id, plan.plan_id, plan.plan_name, plan.parent_org, plan.plan_type, plan.plan_key);
             }
         }
+        Commands::Landscape { landscape_command } => {
+            match landscape_command {
+                cli::LandscapeCommands::Discover { archive } => {
+                    log::info!("Discovering Landscape files in archive: {}", archive);
+                    let archive_path = std::path::Path::new(&archive);
+                    let manifest = ingest::landscape::discover_landscape_files(archive_path).await?;
+                    
+                    let landscape_dir = store_dir.join("landscape");
+                    std::fs::create_dir_all(&landscape_dir)?;
+                    let manifest_path = landscape_dir.join("manifests").join("landscape_manifest.json");
+                    std::fs::create_dir_all(manifest_path.parent().unwrap())?;
+                    
+                    let file = std::fs::File::create(&manifest_path)?;
+                    serde_json::to_writer_pretty(file, &manifest)?;
+
+                    // Generate pretty markdown manifest
+                    let md_path = landscape_dir.join("manifests").join("landscape_manifest_pretty.md");
+                    let mut md_content = String::from("# CMS Landscape Discovery Manifest\n\n");
+                    md_content.push_str("| Year | File Name | Sheet | Type | Columns | Rows |\n");
+                    md_content.push_str("|------|-----------|-------|------|---------|------|\n");
+                    for f in &manifest.files {
+                        md_content.push_str(&format!("| {} | {} | {:?} | {:?} | {} | {:?} |\n", 
+                            f.year, f.file_name, f.sheet, f.file_type, f.columns.len(), f.row_count_estimate));
+                    }
+                    std::fs::write(md_path, md_content)?;
+                    
+                    println!("Discovered {} landscape entries. Manifest saved to {}", manifest.files.len(), manifest_path.display());
+                    for f in manifest.files.iter().take(10) {
+                        println!("- Year {}: {} (Sheet: {:?}, Type: {:?})", f.year, f.file_name, f.sheet, f.file_type);
+                    }
+                    if manifest.files.len() > 10 {
+                        println!("  ... and {} more", manifest.files.len() - 10);
+                    }
+                }
+                cli::LandscapeCommands::Ingest { year, force } => {
+                    log::info!("Ingesting Landscape data for year: {}, force: {}", year, force);
+                    // Placeholder for actual ingestion logic
+                    println!("Ingestion for year {} not yet fully implemented.", year);
+                }
+                cli::LandscapeCommands::List => {
+                    let landscape_dir = store_dir.join("landscape");
+                    let manifest_path = landscape_dir.join("manifests").join("landscape_manifest.json");
+                    if !manifest_path.exists() {
+                        println!("Landscape manifest not found. Run 'landscape discover' first.");
+                    } else {
+                        let file = std::fs::File::open(&manifest_path)?;
+                        let manifest: model::landscape::LandscapeManifest = serde_json::from_reader(file)?;
+                        
+                        println!("Landscape Data Status:");
+                        println!("Imported Years: {:?}", manifest.imported_years);
+                        println!("Available files in manifest: {}", manifest.files.len());
+                        
+                        let years: std::collections::BTreeSet<i32> = manifest.files.iter().map(|f| f.year).collect();
+                        println!("Years discovered: {:?}", years);
+                    }
+                }
+            }
+        }
         Commands::Query { export, query_command } => {
             let engine = query::read_api::QueryEngine::new(store_dir);
             let mut results_json = serde_json::Value::Null;

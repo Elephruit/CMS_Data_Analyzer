@@ -53,6 +53,11 @@ pub enum Commands {
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
     },
+    /// Manage Landscape data
+    Landscape {
+        #[command(subcommand)]
+        landscape_command: LandscapeCommands,
+    },
     /// Query the store
     Query {
         /// Export results to JSON file
@@ -105,4 +110,25 @@ pub enum QueryCommands {
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
     },
+}
+
+#[derive(Subcommand)]
+pub enum LandscapeCommands {
+    /// Discover Landscape files in a ZIP archive
+    Discover {
+        /// Path to the historical Landscape ZIP archive
+        #[arg(short, long)]
+        archive: String,
+    },
+    /// Ingest a specific year from the discovered Landscape files
+    Ingest {
+        /// Year to ingest
+        #[arg(short, long)]
+        year: i32,
+        /// Force re-ingest if already loaded
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// List available and imported Landscape years
+    List,
 }

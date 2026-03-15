@@ -1,5 +1,6 @@
 pub mod normalize;
 pub mod resolver;
+pub mod landscape;
 
 use anyhow::Result;
 use crate::model::{YearMonth, PlanCountySeries, NormalizedRow};

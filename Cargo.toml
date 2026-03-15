@@ -3,10 +3,6 @@ name = "ma_store"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "ma_store"
-path = "src/lib.rs"
-
 [[bin]]
 name = "ma_store"
 path = "src/main.rs"
@@ -67,3 +63,6 @@ env_logger = "0.11"
 # Web server
 axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+calamine = "0.26.1"
+regex = "1.12.3"
+uuid = { version = "1.0", features = ["v4"] }
