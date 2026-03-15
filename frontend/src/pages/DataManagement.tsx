@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Download, 
   Trash2, 
@@ -6,7 +6,11 @@ import {
   CheckCircle2, 
   Calendar,
   CloudDownload,
-  Trash
+  Trash,
+  Settings2,
+  FileText,
+  Star,
+  Info
 } from 'lucide-react';
 import { PageHeader } from '../components/ui/Primitives';
 import { useFilters } from '../context/FilterContext';
@@ -24,10 +28,10 @@ const MONTH_NAMES = [
 
 export const DataManagement: React.FC = () => {
   const { availableMonths: ingestedMonths, refreshAvailableMonths } = useFilters();
-  const [activeTab, setActiveTab] = useState<'enrollment' | 'landscape'>('enrollment');
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showSettings, setShowSettings] = useState(false);
   
   // Landscape state
   const [landscapeStatus, setLandscapeStatus] = useState<{
@@ -78,11 +82,9 @@ export const DataManagement: React.FC = () => {
     }
   };
 
-  React.useEffect(() => {
-    if (activeTab === 'landscape') {
-      refreshLandscape();
-    }
-  }, [activeTab]);
+  useEffect(() => {
+    refreshLandscape();
+  }, []);
   
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth() + 1;
@@ -162,274 +164,297 @@ export const DataManagement: React.FC = () => {
     <div className="max-w-[1400px] mx-auto space-y-10 pb-24 px-4">
       <PageHeader 
         title="Analytical Store Management" 
-        subtitle="Manage and provision enrollment and landscape data for multi-year analysis. Keep your local store updated with the latest CMS releases."
+        subtitle="Manage and provision enrollment, landscape, and star rating data for multi-year analysis."
         action={
-          <div className="flex items-center gap-4">
-            <div className="flex bg-slate-900/50 p-1 rounded-lg border border-slate-800">
-              <button
-                onClick={() => setActiveTab('enrollment')}
-                className={cn(
-                  "px-4 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-md transition-all",
-                  activeTab === 'enrollment' ? "bg-sky-500 text-white shadow-lg shadow-sky-500/20" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                Enrollment
-              </button>
-              <button
-                onClick={() => setActiveTab('landscape')}
-                className={cn(
-                  "px-4 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-md transition-all",
-                  activeTab === 'landscape' ? "bg-sky-500 text-white shadow-lg shadow-sky-500/20" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                Landscape
-              </button>
-            </div>
-            
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setShowSettings(!showSettings)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg border text-xs font-bold transition-all",
+                showSettings 
+                  ? "bg-sky-500/10 border-sky-500/50 text-sky-400" 
+                  : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300"
+              )}
+            >
+              <Settings2 className="w-4 h-4" />
+              ARCHIVE CONFIG
+            </button>
             <button 
               onClick={() => {
                 setLoading(true);
-                if (activeTab === 'enrollment') {
-                  refreshAvailableMonths().finally(() => setLoading(false));
-                } else {
-                  refreshLandscape().finally(() => setLoading(false));
-                }
+                Promise.all([refreshAvailableMonths(), refreshLandscape()]).finally(() => setLoading(false));
               }}
               className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs font-bold text-slate-300 transition-all"
             >
               <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-              REFRESH STATUS
+              REFRESH ALL
             </button>
           </div>
         }
       />
 
-      {activeTab === 'enrollment' ? (
-        <div className="grid grid-cols-1 gap-8">
-          {years.map((year) => {
-            const yearKey = `year-${year}`;
-            const isYearProcessing = processing[yearKey];
-            const yearIngestedCount = ingestedMonths.filter(m => m.year === year).length;
-            
-            return (
-              <div key={year} className="space-y-4">
-                <div className="flex items-center justify-between px-2">
-                  <div className="flex items-baseline gap-3">
-                    <h2 className="text-xl font-black text-white tracking-tight">{year} FISCAL YEAR</h2>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">
-                      {yearIngestedCount} / 12 Months Populated
-                    </span>
-                  </div>
-                  
-                  <div className="flex items-center gap-3">
-                    <button 
-                      onClick={() => handleBulkAction('ingest', year)}
-                      disabled={isYearProcessing || yearIngestedCount === 12}
-                      className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-sky-400 hover:text-white transition-colors disabled:opacity-30"
-                    >
-                      {isYearProcessing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CloudDownload className="w-3 h-3" />}
-                      Sync Year
-                    </button>
-                    <div className="w-px h-4 bg-slate-800" />
-                    <button 
-                      onClick={() => handleBulkAction('delete', year)}
-                      disabled={isYearProcessing || yearIngestedCount === 0}
-                      className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-rose-500 transition-colors disabled:opacity-30"
-                    >
-                      <Trash className="w-3 h-3" />
-                      Purge
-                    </button>
-                  </div>
+      {showSettings && (
+        <div className="bg-slate-800/20 border border-slate-800 rounded-2xl p-8 space-y-6 animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="flex flex-col gap-2">
+            <h3 className="text-lg font-black text-white tracking-tight uppercase flex items-center gap-2">
+              <Settings2 className="w-5 h-5 text-sky-500" />
+              Historical Archive Configuration
+            </h3>
+            <p className="text-sm text-slate-400 max-w-2xl">
+              Configure the source paths for historical data archives. Run discovery to evaluate the structure of annual files before ingestion.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-4 p-6 bg-slate-900/50 rounded-xl border border-slate-800">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-widest">
+                  <FileText className="w-4 h-4 text-sky-400" />
+                  Landscape Archive
                 </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
-                  {MONTH_NAMES.map((name, idx) => {
-                    const monthNum = idx + 1;
-                    const ingested = isIngested(year, monthNum);
-                    const future = isFuture(year, monthNum);
-                    const monthKey = `${year}-${monthNum.toString().padStart(2, '0')}`;
-                    const isProcessing = processing[monthKey];
-
-                    return (
-                      <div
-                        key={monthKey}
-                        className={cn(
-                          "group/month p-4 rounded-xl border flex flex-col gap-2 transition-all duration-200",
-                          ingested
-                            ? "bg-sky-500/5 border-sky-500/20 hover:border-sky-500/50"
-                            : future
-                            ? "bg-slate-900/20 border-slate-800/50 opacity-30 grayscale cursor-not-allowed"
-                            : errors[monthKey]
-                            ? "bg-rose-500/5 border-rose-500/30"
-                            : "bg-slate-800/20 border-slate-800 hover:border-slate-600"
-                        )}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex flex-col gap-1">
-                            <span className={cn(
-                              "text-xs font-black uppercase tracking-widest",
-                              ingested ? "text-sky-400" : "text-slate-500"
-                            )}>
-                              {name}
-                            </span>
-                            <div className="flex items-center gap-1.5">
-                              {ingested ? (
-                                <span className="text-[9px] font-bold text-sky-500/80 uppercase tracking-tighter flex items-center gap-1">
-                                  <CheckCircle2 className="w-2.5 h-2.5" />
-                                  Populated
-                                </span>
-                              ) : future ? (
-                                <span className="text-[9px] font-bold text-slate-600 uppercase tracking-tighter flex items-center gap-1">
-                                  <Calendar className="w-2.5 h-2.5" />
-                                  Locked
-                                </span>
-                              ) : (
-                                <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">
-                                  Available
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          {!future && (
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
-                                disabled={isProcessing}
-                                className={cn(
-                                  "p-2 rounded-lg transition-all",
-                                  ingested
-                                    ? "bg-slate-800/50 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
-                                    : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white shadow-lg shadow-sky-500/0 hover:shadow-sky-500/20"
-                                )}
-                              >
-                                {isProcessing ? (
-                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                ) : ingested ? (
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                ) : (
-                                  <Download className="w-3.5 h-3.5" />
-                                )}
-                              </button>
-                            </div>
-                          )}
-                        </div>
-
-                        {errors[monthKey] && (
-                          <p className="text-[9px] font-mono text-rose-400 leading-tight break-all">
-                            {errors[monthKey]}
-                          </p>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                {landscapeStatus?.status === 'active' && (
+                  <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase rounded border border-emerald-500/20">
+                    Discovered
+                  </span>
+                )}
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="space-y-8">
-          <div className="bg-slate-800/20 border border-slate-800 rounded-2xl p-8 space-y-6">
-            <div className="flex flex-col gap-2">
-              <h3 className="text-lg font-black text-white tracking-tight uppercase">Historical Archive Discovery</h3>
-              <p className="text-sm text-slate-400 max-w-2xl">
-                The CMS Landscape dataset is provided as a large historical archive containing inconsistent file formats across years.
-                Run the discovery process to evaluate the structure of each year before ingestion.
-              </p>
-            </div>
-
-            <div className="flex gap-4 items-end">
-              <div className="flex-1 space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Archive Path</label>
-                <input 
-                  type="text" 
-                  value={archivePath}
-                  onChange={(e) => setArchivePath(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white font-mono focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none transition-all"
-                  placeholder="/path/to/landscape_historical.zip"
-                />
-              </div>
+              <input 
+                type="text" 
+                value={archivePath}
+                onChange={(e) => setArchivePath(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 outline-none transition-all"
+                placeholder="/path/to/landscape_historical.zip"
+              />
               <button
                 onClick={handleDiscover}
                 disabled={loading}
-                className="px-6 py-3 bg-sky-500 hover:bg-sky-400 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-lg shadow-sky-500/20 disabled:opacity-50"
+                className="w-full py-2.5 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border border-sky-500/20"
               >
-                {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : "Run Discovery"}
+                {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin mx-auto" /> : "Run Landscape Discovery"}
+              </button>
+            </div>
+
+            <div className="space-y-4 p-6 bg-slate-900/50 rounded-xl border border-slate-800 opacity-50 grayscale cursor-not-allowed">
+              <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-widest">
+                <Star className="w-4 h-4 text-amber-400" />
+                Star Ratings Archive
+              </div>
+              <input 
+                type="text" 
+                disabled
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-xs text-white font-mono outline-none"
+                placeholder="/path/to/stars_historical.zip"
+              />
+              <button disabled className="w-full py-2.5 bg-slate-800 text-slate-500 text-[10px] font-black uppercase tracking-widest rounded-lg border border-slate-700">
+                Discovery Locked
               </button>
             </div>
           </div>
+        </div>
+      )}
 
-          {landscapeStatus?.status === 'active' && (
-            <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-12">
+        {years.map((year) => {
+          const yearKey = `year-${year}`;
+          const isYearProcessing = processing[yearKey];
+          const yearIngestedCount = ingestedMonths.filter(m => m.year === year).length;
+          
+          // Landscape status for this year
+          const landscapeAvailable = landscapeStatus?.available_years.includes(year);
+          const landscapeIngested = landscapeStatus?.imported_years.includes(year);
+          const isLandscapeProcessing = processing[`landscape-${year}`];
+
+          return (
+            <div key={year} className="space-y-6">
               <div className="flex items-center justify-between px-2">
-                <h2 className="text-xl font-black text-white tracking-tight uppercase">Discovered Landscape Years</h2>
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">
-                  {landscapeStatus.imported_years.length} / {landscapeStatus.available_years.length} Years Loaded
-                </span>
+                <div className="flex items-baseline gap-3">
+                  <h2 className="text-2xl font-black text-white tracking-tight italic uppercase">{year} Fiscal Year</h2>
+                  <div className="h-px w-24 bg-slate-800 mx-2 hidden md:block" />
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">
+                    Monthly Enrollment: {yearIngestedCount} / 12 Populated
+                  </span>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => handleBulkAction('ingest', year)}
+                    disabled={isYearProcessing || yearIngestedCount === 12}
+                    className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-sky-400 hover:text-white transition-colors disabled:opacity-30"
+                  >
+                    {isYearProcessing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CloudDownload className="w-3 h-3" />}
+                    Sync Year
+                  </button>
+                  <div className="w-px h-4 bg-slate-800" />
+                  <button 
+                    onClick={() => handleBulkAction('delete', year)}
+                    disabled={isYearProcessing || yearIngestedCount === 0}
+                    className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-rose-500 transition-colors disabled:opacity-30"
+                  >
+                    <Trash className="w-3 h-3" />
+                    Purge
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                {landscapeStatus.available_years.map((year) => {
-                  const ingested = landscapeStatus.imported_years.includes(year);
-                  const key = `landscape-${year}`;
-                  const isProcessing = processing[key];
+              {/* Annual Files Section */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className={cn(
+                  "p-4 rounded-xl border flex items-center justify-between transition-all",
+                  landscapeIngested 
+                    ? "bg-emerald-500/5 border-emerald-500/20" 
+                    : landscapeAvailable 
+                    ? "bg-sky-500/5 border-sky-500/20"
+                    : "bg-slate-900/40 border-slate-800 opacity-60"
+                )}>
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "p-2 rounded-lg",
+                      landscapeIngested ? "bg-emerald-500/10 text-emerald-500" : "bg-sky-500/10 text-sky-400"
+                    )}>
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-white">Landscape Dataset</span>
+                      <span className="text-[9px] font-bold text-slate-500 uppercase">
+                        {landscapeIngested ? "Status: Populated" : landscapeAvailable ? "Status: Ready for Import" : "Status: Not Found in Archive"}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {landscapeAvailable && !landscapeIngested && (
+                    <button 
+                      onClick={() => handleIngestLandscape(year)}
+                      disabled={isLandscapeProcessing}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-sky-500 hover:bg-sky-400 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all shadow-lg shadow-sky-500/20 disabled:opacity-50"
+                    >
+                      {isLandscapeProcessing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                      {isLandscapeProcessing ? "Importing..." : "Download"}
+                    </button>
+                  )}
+                  
+                  {landscapeIngested && (
+                    <div className="flex items-center gap-2 text-emerald-500">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span className="text-[9px] font-black uppercase tracking-widest">Active</span>
+                    </div>
+                  )}
+
+                  {!landscapeAvailable && !landscapeIngested && (
+                    <div className="flex items-center gap-1.5 text-slate-600">
+                      <Info className="w-3 h-3" />
+                      <span className="text-[9px] font-bold uppercase">Run Discovery</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/40 opacity-30 grayscale cursor-not-allowed flex items-center gap-3">
+                  <div className="p-2 bg-amber-500/10 text-amber-500 rounded-lg">
+                    <Star className="w-4 h-4" />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-white">Star Ratings</span>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase">Status: Locked</span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/40 opacity-30 grayscale cursor-not-allowed flex items-center gap-3">
+                  <div className="p-2 bg-slate-500/10 text-slate-500 rounded-lg">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-white">Plan Benefits</span>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase">Status: Locked</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Monthly Enrollment Grid */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+                {MONTH_NAMES.map((name, idx) => {
+                  const monthNum = idx + 1;
+                  const ingested = isIngested(year, monthNum);
+                  const future = isFuture(year, monthNum);
+                  const monthKey = `${year}-${monthNum.toString().padStart(2, '0')}`;
+                  const isProcessing = processing[monthKey];
 
                   return (
                     <div
-                      key={year}
+                      key={monthKey}
                       className={cn(
-                        "p-6 rounded-2xl border flex flex-col gap-4 transition-all duration-200",
+                        "group/month p-4 rounded-xl border flex flex-col gap-2 transition-all duration-200",
                         ingested
-                          ? "bg-sky-500/5 border-sky-500/20"
-                          : "bg-slate-800/20 border-slate-800"
+                          ? "bg-sky-500/5 border-sky-500/20 hover:border-sky-500/50"
+                          : future
+                          ? "bg-slate-900/20 border-slate-800/50 opacity-30 grayscale cursor-not-allowed"
+                          : errors[monthKey]
+                          ? "bg-rose-500/5 border-rose-500/30"
+                          : "bg-slate-800/20 border-slate-800 hover:border-slate-600"
                       )}
                     >
                       <div className="flex items-center justify-between">
-                        <span className={cn(
-                          "text-2xl font-black italic tracking-tighter",
-                          ingested ? "text-sky-400" : "text-slate-500"
-                        )}>
-                          {year}
-                        </span>
-                        {ingested ? (
-                          <CheckCircle2 className="w-5 h-5 text-sky-500" />
-                        ) : (
-                          <button
-                            onClick={() => handleIngestLandscape(year)}
-                            disabled={isProcessing}
-                            className="p-2 bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white rounded-lg transition-all"
-                          >
-                            {isProcessing ? (
-                              <RefreshCw className="w-4 h-4 animate-spin" />
+                        <div className="flex flex-col gap-1">
+                          <span className={cn(
+                            "text-xs font-black uppercase tracking-widest",
+                            ingested ? "text-sky-400" : "text-slate-500"
+                          )}>
+                            {name}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {ingested ? (
+                              <span className="text-[9px] font-bold text-sky-500/80 uppercase tracking-tighter flex items-center gap-1">
+                                <CheckCircle2 className="w-2.5 h-2.5" />
+                                Populated
+                              </span>
+                            ) : future ? (
+                              <span className="text-[9px] font-bold text-slate-600 uppercase tracking-tighter flex items-center gap-1">
+                                <Calendar className="w-2.5 h-2.5" />
+                                Locked
+                              </span>
                             ) : (
-                              <Download className="w-4 h-4" />
+                              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">
+                                Available
+                              </span>
                             )}
-                          </button>
+                          </div>
+                        </div>
+
+                        {!future && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleAction(ingested ? 'delete' : 'ingest', year, monthNum)}
+                              disabled={isProcessing}
+                              className={cn(
+                                "p-2 rounded-lg transition-all",
+                                ingested
+                                  ? "bg-slate-800/50 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
+                                  : "bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-white shadow-lg shadow-sky-500/0 hover:shadow-sky-500/20"
+                              )}
+                            >
+                              {isProcessing ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : ingested ? (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              ) : (
+                                <Download className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
                         )}
                       </div>
 
-                      <div className="space-y-1">
-                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                          {ingested ? "Data Loaded" : "Ready for Import"}
-                        </div>
-                        <div className="h-1 w-full bg-slate-800 rounded-full overflow-hidden">
-                          <div 
-                            className={cn(
-                              "h-full transition-all duration-1000",
-                              ingested ? "w-full bg-sky-500" : "w-0"
-                            )} 
-                          />
-                        </div>
-                      </div>
+                      {errors[monthKey] && (
+                        <p className="text-[9px] font-mono text-rose-400 leading-tight break-all">
+                          {errors[monthKey]}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </div>
-          )}
-        </div>
-      )}
+          );
+        })}
+      </div>
     </div>
   );
 };
