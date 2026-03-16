@@ -259,11 +259,11 @@ pub fn save_landscape_data(rows: &[crate::model::NormalizedLandscapeRow], path: 
 }
 
 /// Lightweight landscape record for footprint lookups.
+/// `county_key` is a compound `"STATE:county_name"` key (e.g. `"MI:Oakland"`).
 pub struct LandscapeFootprintRow {
     pub contract_id: String,
     pub plan_id: String,
-    pub county_name: String,
-    pub state_abbreviation: String,
+    pub county_key: String,  // "STATE:county_name"
 }
 
 /// Read landscape parquet and return the minimal footprint rows needed for county lookups.
@@ -290,11 +290,12 @@ pub fn load_landscape_footprints(path: &Path) -> Result<Vec<LandscapeFootprintRo
         if let (Some(cids), Some(pids), Some(ctys), Some(sts)) = (contract_ids, plan_ids, counties, states) {
             for i in 0..batch.num_rows() {
                 if !cids.is_null(i) && !pids.is_null(i) && !ctys.is_null(i) {
+                    let state = if sts.is_null(i) { "UNKNOWN" } else { sts.value(i).trim() };
+                    let county = ctys.value(i).trim();
                     rows.push(LandscapeFootprintRow {
                         contract_id: cids.value(i).trim().to_string(),
                         plan_id: pids.value(i).trim().to_string(),
-                        county_name: ctys.value(i).trim().to_string(),
-                        state_abbreviation: if sts.is_null(i) { String::new() } else { sts.value(i).trim().to_string() },
+                        county_key: format!("{}:{}", state, county),
                     });
                 }
             }

@@ -13,12 +13,11 @@ pub struct QueryEngine {
     pub latest_yyyymm: u32,
     pub prior_yyyymm: u32,
     pub lineage_engine: crate::query::lineage::LineageEngine,
-    /// Landscape-based footprints: (year, "contract_id-plan_id") → set of county names.
+    /// Landscape-based footprints: (year, "contract_id-plan_id") → set of "STATE:county" compound keys.
     /// These come from the official CMS landscape files and are the ground-truth source for
-    /// which counties a plan operates in each year.
+    /// which counties a plan operates in each year.  The compound key format means a single
+    /// map lookup gives both the state and county name needed for geo filtering and display.
     pub landscape_fp: HashMap<(u32, String), HashSet<String>>,
-    /// Landscape state index: (year, "contract_id-plan_id") → set of state abbreviations.
-    pub landscape_state: HashMap<(u32, String), HashSet<String>>,
 }
 
 impl QueryEngine {
@@ -76,9 +75,8 @@ impl QueryEngine {
         }
 
         // Load landscape footprints from the ingested parquet files.
-        // These are the authoritative county counts for each plan/year.
+        // Each entry is a compound "STATE:county" key for unambiguous geo filtering.
         let mut landscape_fp: HashMap<(u32, String), HashSet<String>> = HashMap::new();
-        let mut landscape_state: HashMap<(u32, String), HashSet<String>> = HashMap::new();
         for year in [2024u32, 2025, 2026] {
             let lp = store_dir.join("landscape").join("normalized").join(format!("year={}", year)).join("landscape.parquet");
             if lp.exists() {
@@ -86,10 +84,7 @@ impl QueryEngine {
                     Ok(rows) => {
                         for r in rows {
                             let key = format!("{}-{}", r.contract_id, r.plan_id);
-                            landscape_fp.entry((year, key.clone())).or_default().insert(r.county_name);
-                            if !r.state_abbreviation.is_empty() {
-                                landscape_state.entry((year, key)).or_default().insert(r.state_abbreviation);
-                            }
+                            landscape_fp.entry((year, key)).or_default().insert(r.county_key);
                         }
                         log::info!("QueryEngine: Loaded landscape footprints for year {}", year);
                     }
@@ -108,7 +103,6 @@ impl QueryEngine {
             prior_yyyymm,
             lineage_engine,
             landscape_fp,
-            landscape_state,
         }
     }
 
@@ -1009,13 +1003,14 @@ impl QueryEngine {
                 for ((pk, ck), series) in series_cache.iter() {
                     if let Some(p) = pl.get(pk) {
                         let key = format!("{}-{}", p.contract_id, p.plan_id);
-                        let county_name = county_lookup.get(ck).map(|c| c.county_name.clone()).unwrap_or_default();
-                        if county_name.is_empty() { continue; }
+                        // Use compound "STATE:county" key to match landscape format.
+                        let county_key = county_lookup.get(ck).map(|c| format!("{}:{}", c.state_code, c.county_name)).unwrap_or_default();
+                        if county_key.is_empty() { continue; }
                         if (prior_yr_start..=prior_yr_end).any(|m| series.get_enrollment(m).is_some()) {
-                            prior_fp_s.entry(key.clone()).or_default().insert(county_name.clone());
+                            prior_fp_s.entry(key.clone()).or_default().insert(county_key.clone());
                         }
                         if (curr_yr_start..=curr_yr_end).any(|m| series.get_enrollment(m).is_some()) {
-                            curr_fp_s.entry(key).or_default().insert(county_name);
+                            curr_fp_s.entry(key).or_default().insert(county_key);
                         }
                     }
                 }
@@ -1050,29 +1045,25 @@ impl QueryEngine {
         let sel_snp      = filters["snp"].as_bool();
         let sel_egwp     = filters["eghp"].as_bool(); // filter key is "eghp" per FilterContext
 
-        // Check whether a county name passes the geo filter.
-        let county_passes_geo = |county_nm: &str, plan_key: &str, yr: u32| -> bool {
+        // Check whether a compound "STATE:county" key passes the active geo filter.
+        // The "UNKNOWN:" prefix (from series fallback for plans with no state data) never
+        // matches a real state filter, which correctly suppresses those entries when filtering.
+        let county_key_passes_geo = |compound_key: &str| -> bool {
+            let mut parts = compound_key.splitn(2, ':');
+            let state_part  = parts.next().unwrap_or("");
+            let county_part = parts.next().unwrap_or(compound_key);
             if let Some(states) = &sel_states {
-                // Use landscape state index; fall back to county_lookup by name.
-                let plan_states = self.landscape_state.get(&(yr, plan_key.to_string()));
-                let in_state = match plan_states {
-                    Some(ps) => ps.iter().any(|s| states.contains(s)),
-                    None => {
-                        // Fallback: look up county name in county_lookup
-                        county_lookup.values().any(|c| c.county_name == county_nm && states.contains(&c.state_code))
-                    }
-                };
-                if !in_state { return false; }
+                if !states.contains(state_part) { return false; }
             }
             if let Some(cties) = &sel_counties {
-                if !cties.contains(county_nm) { return false; }
+                if !cties.contains(county_part) { return false; }
             }
             true
         };
 
-        // Count landscape counties for a plan that pass the geo filter.
-        let count_landscape_in_geo = |counties: &HashSet<String>, plan_key: &str, yr: u32| -> usize {
-            counties.iter().filter(|cn| county_passes_geo(cn, plan_key, yr)).count()
+        // Count counties in a set that pass the geo filter.
+        let count_in_geo = |counties: &HashSet<String>| -> usize {
+            counties.iter().filter(|ck| county_key_passes_geo(ck)).count()
         };
 
         // Intermediate per-row data — stored before group-level county processing.
@@ -1167,12 +1158,10 @@ impl QueryEngine {
 
             // Geo filter — terminated plans are matched against their *prior* footprint.
             // Non-terminated plans with no current footprint fall back to prior for geo matching.
-            let geo_key = if is_terminated || curr_counties.is_empty() { &row.previous_plan_key } else { &row.current_plan_key };
-            let geo_yr  = if is_terminated || curr_counties.is_empty() { prior_year } else { year };
             let geo_counties = if is_terminated || curr_counties.is_empty() { &prev_counties } else { &curr_counties };
 
             if sel_states.is_some() || sel_counties.is_some() {
-                let ok = geo_counties.iter().any(|cn| county_passes_geo(cn, geo_key, geo_yr));
+                let ok = geo_counties.iter().any(|ck| county_key_passes_geo(ck));
                 if !ok { continue; }
             }
 
@@ -1225,9 +1214,7 @@ impl QueryEngine {
 
             // Closed plans show 0 current counties — they no longer operate anywhere.
             let total_counties = if is_terminated { 0 } else { curr_counties.len() };
-            let filtered_counties = if is_terminated { 0 } else {
-                count_landscape_in_geo(&curr_counties, &row.current_plan_key, year)
-            };
+            let filtered_counties = if is_terminated { 0 } else { count_in_geo(&curr_counties) };
 
             intermed.push(IntermRow {
                 crosswalk_year: row.crosswalk_year,
@@ -1269,12 +1256,50 @@ impl QueryEngine {
                 *group_sizes.entry(ir.current_plan_key.clone()).or_insert(0) += 1;
             }
         }
+        // Helper: split compound key "STATE:county" into (state, county) parts.
+        let split_county_key = |k: &str| -> (String, String) {
+            let mut it = k.splitn(2, ':');
+            let s = it.next().unwrap_or("").to_string();
+            let c = it.next().unwrap_or(k).to_string();
+            (s, c)
+        };
+
         let mut group_added_map: HashMap<String, usize> = HashMap::new();
         let mut group_removed_map: HashMap<String, usize> = HashMap::new();
+        // County name sets for map display: Vec<(state, county)> sorted by state then county.
+        let mut group_renewed_sets: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut group_added_sets:   HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut group_removed_sets: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for (key, prev_union) in &group_prev_union {
             let curr_set: HashSet<String> = get_landscape_fp(key.as_str(), year);
             group_added_map.insert(key.clone(), curr_set.difference(prev_union).count());
             group_removed_map.insert(key.clone(), prev_union.difference(&curr_set).count());
+
+            let mut renewed: Vec<(String, String)> = curr_set.intersection(prev_union).map(|k| split_county_key(k)).collect();
+            let mut added:   Vec<(String, String)> = curr_set.difference(prev_union).map(|k| split_county_key(k)).collect();
+            let mut removed: Vec<(String, String)> = prev_union.difference(&curr_set).map(|k| split_county_key(k)).collect();
+            renewed.sort(); added.sort(); removed.sort();
+            group_renewed_sets.insert(key.clone(), renewed);
+            group_added_sets.insert(key.clone(), added);
+            group_removed_sets.insert(key.clone(), removed);
+        }
+        // For terminated plans and new plans that aren't in group_prev_union, compute individually.
+        // (They have no "group" so their county sets come from the row itself.)
+        let mut row_renewed_sets: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut row_added_sets:   HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut row_removed_sets: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for ir in &intermed {
+            if ir.is_terminated {
+                // Show prior counties as removed (the plan is gone).
+                let mut removed: Vec<(String, String)> = ir.prev_counties.iter().map(|k| split_county_key(k)).collect();
+                removed.sort();
+                row_removed_sets.insert(ir.previous_plan_key.clone(), removed);
+            } else if ir.is_new {
+                let curr = get_landscape_fp(&ir.current_plan_key, year);
+                let mut added: Vec<(String, String)> = curr.iter().map(|k| split_county_key(k)).collect();
+                added.sort();
+                row_added_sets.insert(ir.current_plan_key.clone(), added);
+            }
         }
 
         // === Pass 3: build final JSON and accumulate summary totals ===
@@ -1294,6 +1319,24 @@ impl QueryEngine {
             let group_size = group_sizes.get(&ir.current_plan_key).cloned().unwrap_or(1);
             let g_added   = group_added_map.get(&ir.current_plan_key).cloned().unwrap_or(ir.counties_added);
             let g_removed = group_removed_map.get(&ir.current_plan_key).cloned().unwrap_or(ir.counties_removed);
+
+            // County sets for map display: use group-level sets when available, else row-level.
+            let to_json_counties = |v: &[(String, String)]| -> serde_json::Value {
+                serde_json::Value::Array(v.iter().map(|(s, c)| serde_json::json!({"state": s, "county": c})).collect())
+            };
+            let empty: Vec<(String, String)> = Vec::new();
+            let renewed_counties = group_renewed_sets.get(&ir.current_plan_key)
+                .map(|v| to_json_counties(v)).unwrap_or_else(|| to_json_counties(&empty));
+            let added_counties = if ir.is_new {
+                row_added_sets.get(&ir.current_plan_key).map(|v| to_json_counties(v)).unwrap_or_else(|| to_json_counties(&empty))
+            } else {
+                group_added_sets.get(&ir.current_plan_key).map(|v| to_json_counties(v)).unwrap_or_else(|| to_json_counties(&empty))
+            };
+            let removed_counties = if ir.is_terminated {
+                row_removed_sets.get(&ir.previous_plan_key).map(|v| to_json_counties(v)).unwrap_or_else(|| to_json_counties(&empty))
+            } else {
+                group_removed_sets.get(&ir.current_plan_key).map(|v| to_json_counties(v)).unwrap_or_else(|| to_json_counties(&empty))
+            };
 
             enriched_rows.push(serde_json::json!({
                 "crosswalk_year":         ir.crosswalk_year,
@@ -1318,6 +1361,9 @@ impl QueryEngine {
                 "group_size":             group_size,
                 "group_counties_added":   g_added,
                 "group_counties_removed": g_removed,
+                "renewed_counties":       renewed_counties,
+                "added_counties":         added_counties,
+                "removed_counties":       removed_counties,
                 "org":                    ir.org,
                 "plan_type":              ir.plan_type,
                 "is_egwp":                ir.is_egwp,

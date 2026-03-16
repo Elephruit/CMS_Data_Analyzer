@@ -21,27 +21,28 @@ impl LineageEngine {
         let mut current_year = target_year;
         let mut current_plan_key = plan_key;
 
-        // Trace backwards
+        // Trace backwards, collecting ALL predecessors per year (supports consolidations).
         while current_year >= 2006 {
             let path = self.store_dir.join("crosswalk").join("normalized").join(format!("year={}", current_year)).join("crosswalk.parquet");
             if !path.exists() { break; }
 
             let rows = storage::parquet_store::load_crosswalk_data(&path)?;
-            let predecessor = rows.into_iter().find(|r| r.current_plan_key == current_plan_key);
+            // Collect all rows where this plan is the successor (many-to-one = consolidation).
+            let predecessors: Vec<NormalizedCrosswalkRow> = rows.into_iter()
+                .filter(|r| r.current_plan_key == current_plan_key)
+                .collect();
 
-            if let Some(row) = predecessor {
-                let prev_key = row.previous_plan_key.clone();
-                lineage.push(row);
-                
-                if prev_key == "NEW" || prev_key == current_plan_key && current_year < target_year {
-                    break;
-                }
-                
-                current_plan_key = prev_key;
-                current_year -= 1;
-            } else {
+            if predecessors.is_empty() { break; }
+
+            // Trace backwards through the first predecessor's key (conventional primary chain).
+            let prev_key = predecessors[0].previous_plan_key.clone();
+            lineage.extend(predecessors);
+
+            if prev_key.to_uppercase().contains("NEW") || prev_key == current_plan_key {
                 break;
             }
+            current_plan_key = prev_key;
+            current_year -= 1;
         }
 
         Ok(lineage)
