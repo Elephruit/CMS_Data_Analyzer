@@ -1285,7 +1285,6 @@ impl QueryEngine {
         }
         // For terminated plans and new plans that aren't in group_prev_union, compute individually.
         // (They have no "group" so their county sets come from the row itself.)
-        let mut row_renewed_sets: HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut row_added_sets:   HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut row_removed_sets: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for ir in &intermed {
