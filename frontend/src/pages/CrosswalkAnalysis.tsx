@@ -53,27 +53,44 @@ interface CrosswalkRow {
   is_egwp?: boolean;
 }
 
+// Merge-arrow SVG: two lines converging into one (many-to-one visual)
+const MergeArrow: React.FC<{ color: string }> = ({ color }) => (
+  <svg viewBox="0 0 40 48" className="w-10 h-12" fill="none">
+    <path d="M4 6 C4 6 20 6 20 24" stroke={color} strokeWidth="2.5" strokeLinecap="round" fill="none" />
+    <path d="M4 42 C4 42 20 42 20 24" stroke={color} strokeWidth="2.5" strokeLinecap="round" fill="none" />
+    <path d="M20 24 L34 24" stroke={color} strokeWidth="2.5" strokeLinecap="round" />
+    <path d="M30 19 L36 24 L30 29" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+  </svg>
+);
+
 // Derive badge variant from display_status
-function statusVariant(row: CrosswalkRow): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'pink' {
-  if (row.is_terminated) return 'danger';
-  if (row.is_new) return 'primary';
-  if (row.is_expansion) return 'success';
-  if (row.is_reduction) return 'pink';
-  if (row.display_status === 'Consolidated') return 'warning';
-  return 'primary';
+function statusVariant(displayStatus: string): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'pink' {
+  switch (displayStatus) {
+    case 'Closed':                  return 'danger';
+    case 'New Plan':                return 'primary';
+    case 'Service Area Expansion':  return 'success';
+    case 'Service Area Reduction':  return 'pink';
+    case 'Service Area Change':     return 'warning';
+    case 'Consolidated':            return 'warning';
+    default:                        return 'primary'; // Renewal
+  }
 }
 
-// Group rows by successor plan key for many-to-one rendering
+// Group rows by successor plan key for many-to-one rendering.
+// Terminated plans each form their own group (no successor).
 interface CrosswalkGroup {
   groupKey: string;
   predecessors: CrosswalkRow[];
-  successor: CrosswalkRow; // representative row (all rows share the same successor fields)
+  successor: CrosswalkRow;
+  isMany: boolean;
+  // Resolved display status for the group: if multiple distinct predecessors map to one
+  // successor, override individual row status with "Consolidated".
+  resolvedDisplayStatus: string;
 }
 
 function groupRows(rows: CrosswalkRow[]): CrosswalkGroup[] {
   const map = new Map<string, CrosswalkRow[]>();
   for (const row of rows) {
-    // Terminated/new plans each form their own group
     const key = (row.is_terminated || !row.current_plan_key)
       ? `__term__${row.previous_plan_key}`
       : row.current_plan_key;
@@ -82,7 +99,10 @@ function groupRows(rows: CrosswalkRow[]): CrosswalkGroup[] {
   }
   const groups: CrosswalkGroup[] = [];
   for (const [key, members] of map.entries()) {
-    groups.push({ groupKey: key, predecessors: members, successor: members[0] });
+    const isMany = members.length > 1;
+    // When multiple distinct predecessors map to one successor, it's a consolidation.
+    const resolvedDisplayStatus = isMany ? 'Consolidated' : members[0].display_status;
+    groups.push({ groupKey: key, predecessors: members, successor: members[0], isMany, resolvedDisplayStatus });
   }
   return groups;
 }
@@ -285,26 +305,31 @@ export const CrosswalkAnalysis: React.FC = () => {
               <div className="space-y-2">
                 {groupRows(filteredRows).map((group, gIdx) => {
                   const rep = group.successor;
-                  const isMany = group.predecessors.length > 1;
+                  const { isMany, resolvedDisplayStatus } = group;
+
                   // For many-to-one, use group-level county metrics
                   const displayAdded   = isMany ? rep.group_counties_added   : rep.counties_added;
                   const displayRemoved = isMany ? rep.group_counties_removed : rep.counties_removed;
-                  const arrowColor = rep.is_terminated ? "text-rose-500"
-                    : rep.is_new ? "text-emerald-500"
-                    : rep.is_expansion ? "text-emerald-400"
-                    : rep.is_reduction ? "text-pink-400"
-                    : "text-sky-500";
+
+                  const svgColor = rep.is_terminated ? '#f43f5e'   // rose-500
+                    : resolvedDisplayStatus === 'Consolidated' ? '#f59e0b'  // amber
+                    : rep.is_new ? '#10b981'                                 // emerald
+                    : rep.is_expansion && !rep.is_reduction ? '#34d399'      // emerald-400
+                    : rep.is_reduction && !rep.is_expansion ? '#f472b6'      // pink-400
+                    : '#38bdf8';                                              // sky-400
 
                   return (
                     <div
                       key={gIdx}
-                      className="flex items-stretch gap-2 p-3 bg-slate-900/50 border border-slate-800 rounded-xl hover:border-slate-700 transition-colors group"
+                      className="flex items-center gap-2 p-3 bg-slate-900/50 border border-slate-800 rounded-xl hover:border-slate-700 transition-colors"
                     >
                       {/* Predecessor column */}
-                      <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
+                      <div className="flex-1 min-w-0 flex flex-col justify-center gap-2">
                         {group.predecessors.map((pred, pIdx) => (
                           <div key={pIdx} className="flex flex-col">
-                            <span className={cn("text-xs font-black truncate", rep.is_new ? "text-slate-600 line-through" : "text-sky-400")}>
+                            <span className={cn("text-xs font-black truncate",
+                              rep.is_new ? "text-slate-500 line-through" : "text-sky-400"
+                            )}>
                               {pred.previous_plan_key || '—'}
                             </span>
                             {pred.previous_plan_name && (
@@ -321,21 +346,24 @@ export const CrosswalkAnalysis: React.FC = () => {
                         ))}
                       </div>
 
-                      {/* Arrow(s) */}
-                      <div className="flex flex-col items-center justify-center gap-0.5 px-1">
-                        {group.predecessors.map((_, pIdx) => (
-                          <ArrowRight key={pIdx} className={cn("w-3 h-3 shrink-0", arrowColor)} />
-                        ))}
+                      {/* Arrow — single for one-to-one, merge SVG for many-to-one */}
+                      <div className="flex items-center justify-center shrink-0 px-1">
+                        {isMany
+                          ? <MergeArrow color={svgColor} />
+                          : <ArrowRight className="w-4 h-4" style={{ color: svgColor }} />
+                        }
                       </div>
 
                       {/* Successor column */}
                       <div className="flex-1 min-w-0 flex flex-col justify-center">
-                        <span className={cn("text-xs font-black truncate", rep.is_terminated ? "text-slate-600 line-through" : "text-sky-400")}>
+                        <span className={cn("text-xs font-black truncate",
+                          rep.is_terminated ? "text-slate-500 line-through" : "text-sky-400"
+                        )}>
                           {rep.current_plan_key || '—'}
                         </span>
-                        {(rep.current_plan_name || rep.is_terminated) && (
+                        {rep.current_plan_name && (
                           <span className="text-[10px] text-slate-500 font-medium truncate">
-                            {rep.current_plan_name || 'N/A'}
+                            {rep.current_plan_name}
                           </span>
                         )}
                         {rep.plan_type && (
@@ -347,15 +375,17 @@ export const CrosswalkAnalysis: React.FC = () => {
 
                       {/* Status badge */}
                       <div className="flex items-center shrink-0">
-                        <Badge variant={statusVariant(rep)} label={rep.display_status} />
+                        <Badge variant={statusVariant(resolvedDisplayStatus)} label={resolvedDisplayStatus} />
                       </div>
 
                       {/* County metrics */}
-                      <div className="flex flex-col items-end justify-center shrink-0 min-w-[60px]">
+                      <div className="flex flex-col items-end justify-center shrink-0 min-w-[56px]">
                         <span className="text-xs font-bold text-slate-300">
-                          {rep.filtered_counties > 0 && rep.filtered_counties !== rep.total_counties
-                            ? `${rep.filtered_counties}/${rep.total_counties}`
-                            : rep.total_counties || '—'}
+                          {rep.is_terminated
+                            ? '0'
+                            : rep.filtered_counties > 0 && rep.filtered_counties !== rep.total_counties
+                              ? `${rep.filtered_counties}/${rep.total_counties}`
+                              : (rep.total_counties || '—')}
                         </span>
                         {displayAdded > 0 && (
                           <span className="text-[9px] font-bold text-emerald-500">+{displayAdded}</span>

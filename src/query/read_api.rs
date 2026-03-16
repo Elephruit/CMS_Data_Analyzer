@@ -933,7 +933,13 @@ impl QueryEngine {
         let store_dir = Path::new("store");
         let crosswalk_path = store_dir.join("crosswalk").join("normalized").join(format!("year={}", year)).join("crosswalk.parquet");
         if !crosswalk_path.exists() { return Ok(serde_json::json!({ "status": "not_loaded", "year": year })); }
-        let crosswalk_rows = storage::parquet_store::load_crosswalk_data(&crosswalk_path)?;
+        // Deduplicate by (previous_plan_key, current_plan_key): the raw CMS files sometimes
+        // contain identical rows multiple times, producing phantom duplicate predecessors in the UI.
+        let crosswalk_rows = {
+            let raw = storage::parquet_store::load_crosswalk_data(&crosswalk_path)?;
+            let mut seen: HashSet<(String, String)> = HashSet::new();
+            raw.into_iter().filter(|r| seen.insert((r.previous_plan_key.clone(), r.current_plan_key.clone()))).collect::<Vec<_>>()
+        };
 
         let plan_lookup = match &self.plan_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("Plan lookup required")), };
         let county_lookup = match &self.county_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("County lookup required")), };
@@ -946,7 +952,11 @@ impl QueryEngine {
             str_to_plan_key.insert(format!("{}-{}", p.contract_id, p.plan_id), *k);
         }
 
-        // Build county footprints for prior and current year from enrollment series.
+        // Build county footprints from the enrollment series.
+        // A plan "operates in" a county in a given year if ANY month of that year has a
+        // recorded presence in the series (bitmap bit set), even if enrollment is zero.
+        // This matches landscape-file semantics where a plan is listed for a county even
+        // if no members enrolled there yet.
         let mut prior_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
         let mut curr_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
         let prior_yr_start = (year - 1) * 100 + 1;
@@ -954,17 +964,11 @@ impl QueryEngine {
         let curr_yr_start  = year * 100 + 1;
         let curr_yr_end    = year * 100 + 12;
         for ((pk, ck), series) in series_cache.iter() {
-            for month in prior_yr_start..=prior_yr_end {
-                if series.get_enrollment(month).map(|e| e > 0).unwrap_or(false) {
-                    prior_fp.entry(*pk).or_default().insert(*ck);
-                    break;
-                }
+            if (prior_yr_start..=prior_yr_end).any(|m| series.get_enrollment(m).is_some()) {
+                prior_fp.entry(*pk).or_default().insert(*ck);
             }
-            for month in curr_yr_start..=curr_yr_end {
-                if series.get_enrollment(month).map(|e| e > 0).unwrap_or(false) {
-                    curr_fp.entry(*pk).or_default().insert(*ck);
-                    break;
-                }
+            if (curr_yr_start..=curr_yr_end).any(|m| series.get_enrollment(m).is_some()) {
+                curr_fp.entry(*pk).or_default().insert(*ck);
             }
         }
 
@@ -1041,7 +1045,16 @@ impl QueryEngine {
             };
             let s_up = effective_status.to_uppercase();
             let is_terminated = s_up.contains("TERMINATED") || s_up.contains("NON-RENEWED");
-            let is_new_plan = (s_up.contains("NEW") || s_up.contains("INITIAL")) && !is_terminated;
+            // A plan is truly "new" only when there is no real predecessor: the CMS crosswalk
+            // encodes new plans by putting "NEW" in the previous plan ID column.  If the previous
+            // plan ID is an actual plan number the row is a renewal even if the status label says
+            // "New Plan" (a known CMS labelling inconsistency).
+            let has_real_predecessor = !row.previous_plan_key.is_empty()
+                && !row.previous_plan_id.to_uppercase().contains("NEW")
+                && !row.previous_contract_id.to_uppercase().contains("NEW");
+            let is_new_plan = (s_up.contains("NEW") || s_up.contains("INITIAL"))
+                && !is_terminated
+                && !has_real_predecessor;
 
             // Use previous plan for metadata lookups on terminated rows.
             let ref_key = if is_terminated || row.current_plan_key.is_empty() {
@@ -1075,7 +1088,9 @@ impl QueryEngine {
                     .and_then(|pk| curr_fp.get(pk)).cloned().unwrap_or_default()
             };
 
-            // Geo filters — terminated plans are matched against prior footprint.
+            // Geo filters — terminated plans are matched against their *prior* footprint
+            // (where they used to operate) so they still appear when filtering by a state
+            // they operated in before closing.  For display we show 0 current counties.
             let geo_counties = if is_terminated { &prev_counties } else { &curr_counties };
             if let Some(states) = &sel_states {
                 let ok = geo_counties.iter().any(|ck| county_lookup.get(ck).map(|c| states.contains(&c.state_code)).unwrap_or(false));
@@ -1112,16 +1127,19 @@ impl QueryEngine {
             };
 
             let fs_up = final_status.to_uppercase();
-            let is_expansion = final_added > 0 && final_removed == 0 && !is_new_plan && !is_terminated;
-            let is_reduction = final_removed > 0 && final_added == 0 && !is_new_plan && !is_terminated;
+            // Both flags can be true simultaneously (plan added some counties and dropped others).
+            let is_expansion = final_added > 0 && !is_new_plan && !is_terminated;
+            let is_reduction = final_removed > 0 && !is_new_plan && !is_terminated;
 
-            // Display status mapping (Bug 3).
+            // Display status mapping.
             let display_status = if is_terminated {
                 "Closed"
             } else if is_new_plan {
                 "New Plan"
             } else if fs_up.contains("CONSOLIDATED") {
                 "Consolidated"
+            } else if is_expansion && is_reduction {
+                "Service Area Change"
             } else if fs_up.contains("SAE") || is_expansion {
                 "Service Area Expansion"
             } else if fs_up.contains("SAR") || is_reduction {
@@ -1130,8 +1148,9 @@ impl QueryEngine {
                 "Renewal"
             };
 
-            let total_counties = if is_terminated { prev_counties.len() } else { curr_counties.len() };
-            let filtered_counties = count_in_geo(if is_terminated { &prev_counties } else { &curr_counties });
+            // Closed plans show 0 current counties — they no longer operate anywhere.
+            let total_counties = if is_terminated { 0 } else { curr_counties.len() };
+            let filtered_counties = if is_terminated { 0 } else { count_in_geo(&curr_counties) };
 
             intermed.push(IntermRow {
                 crosswalk_year: row.crosswalk_year,
