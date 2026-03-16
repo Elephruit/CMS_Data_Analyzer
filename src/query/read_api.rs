@@ -945,12 +945,28 @@ impl QueryEngine {
         let county_lookup = match &self.county_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("County lookup required")), };
         let series_cache = match &self.series_cache { Some(c) => c, None => return Err(anyhow::anyhow!("Series cache required")), };
 
-        // Build str-key → u32 plan_key map (covers plans from CPSC contract/enrollment data,
+        // Build str-key → Vec<u32> plan_key map (covers plans from CPSC contract/enrollment data,
         // including 800-series EGWP plans that may not appear in landscape files).
-        let mut str_to_plan_key: HashMap<String, u32> = HashMap::new();
+        // A plan may appear under multiple u32 keys across different valid periods, so we keep
+        // ALL of them and union footprints when building county sets.
+        let mut str_to_plan_keys: HashMap<String, Vec<u32>> = HashMap::new();
         for (k, p) in plan_lookup.iter() {
-            str_to_plan_key.insert(format!("{}-{}", p.contract_id, p.plan_id), *k);
+            str_to_plan_keys.entry(format!("{}-{}", p.contract_id, p.plan_id)).or_default().push(*k);
         }
+        // Helper: union footprints across all u32 keys for a given "contract_id-plan_id" string key.
+        let get_fp = |str_key: &str, fp: &HashMap<u32, HashSet<u32>>| -> HashSet<u32> {
+            let mut result: HashSet<u32> = HashSet::new();
+            if let Some(keys) = str_to_plan_keys.get(str_key) {
+                for &k in keys {
+                    if let Some(counties) = fp.get(&k) { result.extend(counties.iter().cloned()); }
+                }
+            }
+            result
+        };
+        // Helper: find the first matching PlanDim for a string key (for metadata lookups).
+        let get_plan_dim = |str_key: &str| -> Option<&PlanDim> {
+            str_to_plan_keys.get(str_key)?.iter().find_map(|k| plan_lookup.get(k))
+        };
 
         // Build county footprints from the enrollment series.
         // A plan "operates in" a county in a given year if ANY month of that year has a
@@ -1062,7 +1078,7 @@ impl QueryEngine {
             } else {
                 &row.current_plan_key
             };
-            let plan_dim = str_to_plan_key.get(ref_key.as_str()).and_then(|pk| plan_lookup.get(pk));
+            let plan_dim = get_plan_dim(ref_key.as_str());
 
             // Metadata filters (org, type, SNP, EGWP — sourced from CPSC contract data via plan_lookup).
             if let Some(orgs) = &sel_orgs {
@@ -1078,20 +1094,26 @@ impl QueryEngine {
                 match plan_dim { Some(p) => if p.is_egwp != egwp { continue; }, None => continue }
             }
 
-            // County footprints.
-            let prev_counties: HashSet<u32> = str_to_plan_key.get(row.previous_plan_key.as_str())
-                .and_then(|pk| prior_fp.get(pk)).cloned().unwrap_or_default();
+            // County footprints — union across all u32 plan keys for this contract/plan string.
+            let prev_counties: HashSet<u32> = get_fp(&row.previous_plan_key, &prior_fp);
             let curr_counties: HashSet<u32> = if is_terminated {
                 HashSet::new()
             } else {
-                str_to_plan_key.get(row.current_plan_key.as_str())
-                    .and_then(|pk| curr_fp.get(pk)).cloned().unwrap_or_default()
+                get_fp(&row.current_plan_key, &curr_fp)
             };
 
             // Geo filters — terminated plans are matched against their *prior* footprint
             // (where they used to operate) so they still appear when filtering by a state
             // they operated in before closing.  For display we show 0 current counties.
-            let geo_counties = if is_terminated { &prev_counties } else { &curr_counties };
+            // If a non-terminated renewal has no curr footprint yet (data lag), fall back to
+            // the prior footprint for geo matching so the plan isn't silently dropped.
+            let geo_counties: &HashSet<u32> = if is_terminated {
+                &prev_counties
+            } else if curr_counties.is_empty() && !prev_counties.is_empty() {
+                &prev_counties
+            } else {
+                &curr_counties
+            };
             if let Some(states) = &sel_states {
                 let ok = geo_counties.iter().any(|ck| county_lookup.get(ck).map(|c| states.contains(&c.state_code)).unwrap_or(false));
                 if !ok { continue; }
@@ -1195,8 +1217,7 @@ impl QueryEngine {
         let mut group_added_map: HashMap<String, usize> = HashMap::new();
         let mut group_removed_map: HashMap<String, usize> = HashMap::new();
         for (key, prev_union) in &group_prev_union {
-            let curr_set: HashSet<u32> = str_to_plan_key.get(key.as_str())
-                .and_then(|pk| curr_fp.get(pk)).cloned().unwrap_or_default();
+            let curr_set: HashSet<u32> = get_fp(key.as_str(), &curr_fp);
             group_added_map.insert(key.clone(), curr_set.difference(prev_union).count());
             group_removed_map.insert(key.clone(), prev_union.difference(&curr_set).count());
         }

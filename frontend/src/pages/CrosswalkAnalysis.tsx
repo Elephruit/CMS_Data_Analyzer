@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Shuffle, 
-  ArrowRight, 
-  Search, 
+import {
+  Shuffle,
+  ArrowRight,
+  Search,
   Download,
-  AlertCircle,
   RefreshCw,
   Plus,
   Trash2,
@@ -121,15 +120,6 @@ interface CrosswalkData {
   rows?: CrosswalkRow[];
 }
 
-interface AEPSwitching {
-  year: number;
-  results: {
-    organization: string;
-    aepGrowth: number;
-    estimatedSwitching: number;
-  }[];
-}
-
 interface LineageRow {
   crosswalk_year: number;
   previous_plan_key: string;
@@ -143,7 +133,6 @@ export const CrosswalkAnalysis: React.FC = () => {
   const { filters } = useFilters();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<CrosswalkData | null>(null);
-  const [aepData, setAepData] = useState<AEPSwitching | null>(null);
   const [searchTerm, setSearch] = useState('');
   
   // Lineage State
@@ -153,21 +142,13 @@ export const CrosswalkAnalysis: React.FC = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [res, aepRes] = await Promise.all([
-        fetch('http://127.0.0.1:3000/api/crosswalk/analysis', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(filters),
-        }),
-        fetch('http://127.0.0.1:3000/api/crosswalk/aep-switching', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(filters),
-        })
-      ]);
+      const res = await fetch('http://127.0.0.1:3000/api/crosswalk/analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(filters),
+      });
 
       if (res.ok) setData(await res.json());
-      if (aepRes.ok) setAepData(await aepRes.json());
     } catch (e) {
       console.error('Failed to fetch crosswalk data', e);
     } finally {
@@ -285,8 +266,7 @@ export const CrosswalkAnalysis: React.FC = () => {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-8">
+      <div className="space-y-8">
           <ChartCard title="Plan Transition Workspace">
             <div className="space-y-6">
               <div className="flex items-center gap-4">
@@ -411,56 +391,6 @@ export const CrosswalkAnalysis: React.FC = () => {
               </div>
             </div>
           </ChartCard>
-        </div>
-
-        <div className="space-y-8">
-          <ChartCard title="AEP Switching Estimator">
-            <div className="space-y-6">
-              <div className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-2">
-                <div className="flex items-center gap-2 text-amber-500 text-[10px] font-black uppercase tracking-widest">
-                  <AlertCircle className="w-3 h-3" />
-                  Analytical Rule
-                </div>
-                <p className="text-[10px] text-slate-400 leading-relaxed">
-                  Estimated Switching calculates the difference between actual Feb enrollment and the enrollment expected based solely on Crosswalk mappings from Dec.
-                </p>
-              </div>
-
-              <div className="space-y-4">
-                {aepData?.results.map((res, idx) => (
-                  <div key={idx} className="p-4 bg-slate-900/50 border border-slate-800 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-white uppercase tracking-tight">{res.organization}</span>
-                      <Badge 
-                        variant={res.estimatedSwitching > 0 ? 'success' : 'danger'}
-                        label={`${res.estimatedSwitching > 0 ? '+' : ''}${res.estimatedSwitching.toLocaleString()}`}
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">Total AEP Growth</span>
-                        <div className="text-xs font-bold text-slate-300">{res.aepGrowth.toLocaleString()}</div>
-                      </div>
-                      <div className="space-y-1">
-                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">Switching Component</span>
-                        <div className="text-xs font-bold text-slate-300">{res.estimatedSwitching.toLocaleString()}</div>
-                      </div>
-                    </div>
-                    <div className="h-1 w-full bg-slate-800 rounded-full overflow-hidden">
-                      <div 
-                        className={cn(
-                          "h-full transition-all duration-1000",
-                          res.estimatedSwitching > 0 ? "bg-emerald-500" : "bg-rose-500"
-                        )}
-                        style={{ width: `${Math.min(Math.abs(res.estimatedSwitching) / 10000 * 100, 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </ChartCard>
-        </div>
       </div>
 
       {/* Lineage Modal */}
