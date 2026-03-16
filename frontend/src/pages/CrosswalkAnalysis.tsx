@@ -12,7 +12,7 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
-  Map,
+  Map as MapIcon,
 } from 'lucide-react';
 import { PageHeader, StatCard, ChartCard, Badge } from '../components/ui/Primitives';
 import { useFilters } from '../context/FilterContext';
@@ -106,7 +106,7 @@ function groupRows(rows: CrosswalkRow[]): CrosswalkGroup[] {
     const resolvedDisplayStatus = isMany ? 'Consolidated' : members[0].display_status;
     // If all predecessors share the same parent org, hoist it as a group header.
     const orgs = [...new Set(members.map(m => m.org).filter(Boolean))];
-    const sharedOrg = isMany && orgs.length === 1 ? orgs[0]! : null;
+    const sharedOrg: string | null = isMany && orgs.length === 1 ? (orgs[0] as string) : null;
     groups.push({ groupKey: key, predecessors: members, successor: members[0], isMany, resolvedDisplayStatus, sharedOrg });
   }
   return groups;
@@ -200,7 +200,7 @@ const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
         <div className="p-6 border-b border-slate-800 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-sky-500/10 rounded-lg">
-              <Map className="w-5 h-5 text-sky-500" />
+              <MapIcon className="w-5 h-5 text-sky-500" />
             </div>
             <div>
               <h3 className="text-lg font-black text-white uppercase tracking-tight">County Service Area</h3>
@@ -492,7 +492,7 @@ export const CrosswalkAnalysis: React.FC = () => {
                         className="p-2 hover:bg-emerald-500/10 rounded-lg transition-all text-slate-500 hover:text-emerald-400"
                         title="View County Map"
                       >
-                        <Map className="w-4 h-4" />
+                        <MapIcon className="w-4 h-4" />
                       </button>
                       <button
                         onClick={() => fetchLineage(group)}
