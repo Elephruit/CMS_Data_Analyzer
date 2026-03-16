@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shuffle,
   ArrowRight,
@@ -14,6 +14,8 @@ import {
   Minus,
   Map as MapIcon,
 } from 'lucide-react';
+import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
+import type { GeographyItem } from 'react-simple-maps';
 import { PageHeader, StatCard, ChartCard, Badge } from '../components/ui/Primitives';
 import { useFilters } from '../context/FilterContext';
 import { clsx, type ClassValue } from 'clsx';
@@ -60,15 +62,60 @@ interface CrosswalkRow {
   is_egwp?: boolean;
 }
 
-// Merge-arrow SVG: two lines converging into one (many-to-one visual)
+// Compact merge-arrow: same visual weight as the ArrowRight icon
 const MergeArrow: React.FC<{ color: string }> = ({ color }) => (
-  <svg viewBox="0 0 40 48" className="w-10 h-12" fill="none">
-    <path d="M4 6 C4 6 20 6 20 24" stroke={color} strokeWidth="2.5" strokeLinecap="round" fill="none" />
-    <path d="M4 42 C4 42 20 42 20 24" stroke={color} strokeWidth="2.5" strokeLinecap="round" fill="none" />
-    <path d="M20 24 L34 24" stroke={color} strokeWidth="2.5" strokeLinecap="round" />
-    <path d="M30 19 L36 24 L30 29" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+  <svg viewBox="0 0 24 20" className="w-6 h-5" fill="none">
+    <path d="M2 4 C8 4 10 10 12 10" stroke={color} strokeWidth="2" strokeLinecap="round" />
+    <path d="M2 16 C8 16 10 10 12 10" stroke={color} strokeWidth="2" strokeLinecap="round" />
+    <path d="M12 10 L20 10" stroke={color} strokeWidth="2" strokeLinecap="round" />
+    <path d="M17 6.5 L20.5 10 L17 13.5" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+// ──────────────────────────────────────────────────────────────
+// Geographic map helpers
+// ──────────────────────────────────────────────────────────────
+const STATE_FIPS: Record<string, string> = {
+  AL:"01", AK:"02", AZ:"04", AR:"05", CA:"06", CO:"08", CT:"09",
+  DE:"10", DC:"11", FL:"12", GA:"13", HI:"15", ID:"16", IL:"17",
+  IN:"18", IA:"19", KS:"20", KY:"21", LA:"22", ME:"23", MD:"24",
+  MA:"25", MI:"26", MN:"27", MS:"28", MO:"29", MT:"30", NE:"31",
+  NV:"32", NH:"33", NJ:"34", NM:"35", NY:"36", NC:"37", ND:"38",
+  OH:"39", OK:"40", OR:"41", PA:"42", RI:"44", SC:"45", SD:"46",
+  TN:"47", TX:"48", UT:"49", VT:"50", VA:"51", WA:"53", WV:"54",
+  WI:"55", WY:"56", PR:"72",
+};
+
+type CountyCategory = 'renewed' | 'added' | 'removed';
+
+function buildFipsLookup(
+  geographies: GeographyItem[],
+  renewed: CountyEntry[],
+  added: CountyEntry[],
+  removed: CountyEntry[],
+): Map<string, CountyCategory> {
+  // index: "state_fips:normalized_county_name" → county fips
+  const idx = new Map<string, string>();
+  for (const geo of geographies) {
+    const sf = geo.id.slice(0, 2);
+    const name = (geo.properties.name as string).toLowerCase().replace(/\./g, '').trim();
+    idx.set(`${sf}:${name}`, geo.id);
+  }
+  const result = new Map<string, CountyCategory>();
+  const add = (counties: CountyEntry[], cat: CountyCategory) => {
+    for (const { state, county } of counties) {
+      const sf = STATE_FIPS[state.toUpperCase()];
+      if (!sf) continue;
+      const norm = county.toLowerCase().replace(/\./g, '').trim();
+      const fips = idx.get(`${sf}:${norm}`);
+      if (fips) result.set(fips, cat);
+    }
+  };
+  add(removed, 'removed');
+  add(added, 'added');
+  add(renewed, 'renewed'); // renewed overwrites if overlap
+  return result;
+}
 
 function statusVariant(displayStatus: string): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'pink' {
   switch (displayStatus) {
@@ -157,53 +204,37 @@ interface MapModalProps {
   onClose: () => void;
 }
 
+const CAT_FILL: Record<CountyCategory, string> = {
+  renewed: '#0ea5e9',
+  added:   '#10b981',
+  removed: '#f43f5e',
+};
+
 const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
   const rep = group.successor;
-
-  // Merge county sets from all predecessors in the group
   const renewed = rep.renewed_counties ?? [];
   const added   = rep.added_counties   ?? [];
   const removed = rep.removed_counties ?? [];
 
-  // Build a map: state → [{county, category}] sorted by county name
-  type Category = 'renewed' | 'added' | 'removed';
-  const byState = new Map<string, Array<{ county: string; category: Category }>>();
-  const addEntries = (list: CountyEntry[], cat: Category) => {
-    for (const { state, county } of list) {
-      if (!byState.has(state)) byState.set(state, []);
-      byState.get(state)!.push({ county, category: cat });
-    }
-  };
-  addEntries(renewed, 'renewed');
-  addEntries(added, 'added');
-  addEntries(removed, 'removed');
-  // Sort within each state
-  for (const entries of byState.values()) {
-    entries.sort((a, b) => a.county.localeCompare(b.county));
-  }
-  const sortedStates = [...byState.keys()].sort();
+  const planLabel = rep.is_terminated ? rep.previous_plan_key : rep.current_plan_key;
 
-  const catStyle: Record<Category, string> = {
-    renewed: 'bg-sky-500/10 text-sky-400 border border-sky-500/20',
-    added:   'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
-    removed: 'bg-rose-500/10 text-rose-400 border border-rose-500/20',
-  };
-
-  const planLabel = rep.is_terminated
-    ? rep.previous_plan_key
-    : rep.current_plan_key;
+  const getFipsMap = useCallback(
+    (geographies: GeographyItem[]) => buildFipsLookup(geographies, renewed, added, removed),
+    [renewed, added, removed],
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-      <div className="w-full max-w-3xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <div className="w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '90vh' }}>
+
         {/* Header */}
-        <div className="p-6 border-b border-slate-800 flex items-center justify-between shrink-0">
+        <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-sky-500/10 rounded-lg">
               <MapIcon className="w-5 h-5 text-sky-500" />
             </div>
             <div>
-              <h3 className="text-lg font-black text-white uppercase tracking-tight">County Service Area</h3>
+              <h3 className="text-base font-black text-white uppercase tracking-tight">County Service Area</h3>
               <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{planLabel}</p>
             </div>
           </div>
@@ -213,45 +244,87 @@ const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
         </div>
 
         {/* Summary bar */}
-        <div className="flex items-center gap-6 px-6 py-3 bg-slate-950/30 border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-sky-400" />
+        <div className="flex items-center gap-6 px-6 py-2.5 bg-slate-950/40 border-b border-slate-800 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: CAT_FILL.renewed }} />
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{renewed.length} Renewed</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: CAT_FILL.added }} />
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{added.length} New</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-rose-400" />
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: CAT_FILL.removed }} />
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{removed.length} Removed</span>
           </div>
           <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest ml-auto">
-            Total {renewed.length + added.length + removed.length} counties
+            {renewed.length + added.length + removed.length} total counties
           </span>
         </div>
 
-        {/* County list */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {sortedStates.length === 0 && (
-            <p className="text-sm text-slate-500 text-center py-8">No county data available for this plan.</p>
-          )}
-          {sortedStates.map(state => (
-            <div key={state}>
-              <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">{state}</h4>
-              <div className="flex flex-wrap gap-1.5">
-                {byState.get(state)!.map(({ county, category }, i) => (
-                  <span key={i} className={cn('px-2 py-0.5 rounded text-[10px] font-bold', catStyle[category])}>
-                    {county}
-                  </span>
-                ))}
-              </div>
+        {/* Map */}
+        <div className="relative bg-slate-950" style={{ height: 480 }}>
+          {(renewed.length + added.length + removed.length) === 0 ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <p className="text-sm text-slate-500">No county service area data available.</p>
             </div>
-          ))}
+          ) : (
+            <ComposableMap
+              projection="geoAlbersUsa"
+              style={{ width: '100%', height: '100%' }}
+            >
+              {/* County fills */}
+              <Geographies geography="/counties-10m.json">
+                {({ geographies }) => {
+                  const fipsMap = getFipsMap(geographies);
+                  return geographies.map(geo => {
+                    const cat = fipsMap.get(geo.id);
+                    return (
+                      <Geography
+                        key={geo.rsmKey}
+                        geography={geo}
+                        fill={cat ? CAT_FILL[cat] : '#0f172a'}
+                        stroke="#1e293b"
+                        strokeWidth={0.3}
+                        style={{
+                          default:  { outline: 'none' },
+                          hover:    { outline: 'none', opacity: cat ? 0.75 : 1 },
+                          pressed:  { outline: 'none' },
+                        }}
+                      />
+                    );
+                  });
+                }}
+              </Geographies>
+              {/* State borders on top */}
+              <Geographies geography="/states-10m.json">
+                {({ geographies }) =>
+                  geographies.map(geo => (
+                    <Geography
+                      key={geo.rsmKey}
+                      geography={geo}
+                      fill="none"
+                      stroke="#334155"
+                      strokeWidth={0.7}
+                      style={{
+                        default: { outline: 'none' },
+                        hover:   { outline: 'none' },
+                        pressed: { outline: 'none' },
+                      }}
+                    />
+                  ))
+                }
+              </Geographies>
+            </ComposableMap>
+          )}
         </div>
 
-        <div className="p-4 bg-slate-950/50 border-t border-slate-800 shrink-0">
-          <button onClick={onClose} className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all">
+        {/* Footer */}
+        <div className="px-6 py-3 bg-slate-950/50 border-t border-slate-800 shrink-0">
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black uppercase tracking-widest rounded-xl transition-all"
+          >
             Close
           </button>
         </div>
@@ -402,13 +475,13 @@ export const CrosswalkAnalysis: React.FC = () => {
                   >
                     {/* ── Col 1: Predecessor(s) ── */}
                     <div className="min-w-0">
-                      {/* Org header for grouped plans */}
+                      {/* Org header for grouped (many-to-one) plans */}
                       {sharedOrg && (
-                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5 truncate">
+                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 truncate">
                           {sharedOrg}
                         </p>
                       )}
-                      <div className="flex flex-col gap-1.5">
+                      <div className={cn('flex flex-col', isMany ? 'gap-0.5' : 'gap-0')}>
                         {group.predecessors.map((pred, pIdx) => (
                           <div key={pIdx} className="flex flex-col min-w-0">
                             <span className={cn('text-xs font-black truncate',
@@ -416,12 +489,13 @@ export const CrosswalkAnalysis: React.FC = () => {
                             )}>
                               {isMany ? `• ${pred.previous_plan_key}` : pred.previous_plan_key || '—'}
                             </span>
-                            {pred.previous_plan_name && (
+                            {/* In consolidation rows only show plan IDs to keep rows compact.
+                                Full names are visible in the map/lineage modals. */}
+                            {!isMany && pred.previous_plan_name && (
                               <span className="text-[10px] text-slate-500 font-medium truncate">
-                                {isMany ? pred.previous_plan_name : pred.previous_plan_name}
+                                {pred.previous_plan_name}
                               </span>
                             )}
-                            {/* For single rows, show org under the plan name */}
                             {!isMany && pred.org && (
                               <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter truncate">
                                 {pred.org}

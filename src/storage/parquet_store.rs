@@ -258,6 +258,43 @@ pub fn save_landscape_data(rows: &[crate::model::NormalizedLandscapeRow], path: 
     Ok(())
 }
 
+/// Normalise whatever state string the CMS CSV carries to a 2-letter abbreviation.
+/// Handles both full names ("Texas") and already-abbreviated values ("TX").
+fn normalize_state_abbrev(s: &str) -> String {
+    let up = s.trim().to_uppercase();
+    let abbr: &str = match up.as_str() {
+        "ALABAMA"              => "AL", "ALASKA"           => "AK",
+        "ARIZONA"              => "AZ", "ARKANSAS"         => "AR",
+        "CALIFORNIA"           => "CA", "COLORADO"         => "CO",
+        "CONNECTICUT"          => "CT", "DELAWARE"         => "DE",
+        "DISTRICT OF COLUMBIA" => "DC", "FLORIDA"          => "FL",
+        "GEORGIA"              => "GA", "HAWAII"           => "HI",
+        "IDAHO"                => "ID", "ILLINOIS"         => "IL",
+        "INDIANA"              => "IN", "IOWA"             => "IA",
+        "KANSAS"               => "KS", "KENTUCKY"         => "KY",
+        "LOUISIANA"            => "LA", "MAINE"            => "ME",
+        "MARYLAND"             => "MD", "MASSACHUSETTS"    => "MA",
+        "MICHIGAN"             => "MI", "MINNESOTA"        => "MN",
+        "MISSISSIPPI"          => "MS", "MISSOURI"         => "MO",
+        "MONTANA"              => "MT", "NEBRASKA"         => "NE",
+        "NEVADA"               => "NV", "NEW HAMPSHIRE"    => "NH",
+        "NEW JERSEY"           => "NJ", "NEW MEXICO"       => "NM",
+        "NEW YORK"             => "NY", "NORTH CAROLINA"   => "NC",
+        "NORTH DAKOTA"         => "ND", "OHIO"             => "OH",
+        "OKLAHOMA"             => "OK", "OREGON"           => "OR",
+        "PENNSYLVANIA"         => "PA", "RHODE ISLAND"     => "RI",
+        "SOUTH CAROLINA"       => "SC", "SOUTH DAKOTA"     => "SD",
+        "TENNESSEE"            => "TN", "TEXAS"            => "TX",
+        "UTAH"                 => "UT", "VERMONT"          => "VT",
+        "VIRGINIA"             => "VA", "WASHINGTON"       => "WA",
+        "WEST VIRGINIA"        => "WV", "WISCONSIN"        => "WI",
+        "WYOMING"              => "WY", "PUERTO RICO"      => "PR",
+        "GUAM"                 => "GU", "VIRGIN ISLANDS"   => "VI",
+        _ => return up, // already an abbreviation or unknown — pass through
+    };
+    abbr.to_string()
+}
+
 /// Lightweight landscape record for footprint lookups.
 /// `county_key` is a compound `"STATE:county_name"` key (e.g. `"MI:Oakland"`).
 pub struct LandscapeFootprintRow {
@@ -290,7 +327,8 @@ pub fn load_landscape_footprints(path: &Path) -> Result<Vec<LandscapeFootprintRo
         if let (Some(cids), Some(pids), Some(ctys), Some(sts)) = (contract_ids, plan_ids, counties, states) {
             for i in 0..batch.num_rows() {
                 if !cids.is_null(i) && !pids.is_null(i) && !ctys.is_null(i) {
-                    let state = if sts.is_null(i) { "UNKNOWN" } else { sts.value(i).trim() };
+                    let raw_state = if sts.is_null(i) { "UNKNOWN" } else { sts.value(i).trim() };
+                    let state = normalize_state_abbrev(raw_state);
                     let county = ctys.value(i).trim();
                     rows.push(LandscapeFootprintRow {
                         contract_id: cids.value(i).trim().to_string(),
