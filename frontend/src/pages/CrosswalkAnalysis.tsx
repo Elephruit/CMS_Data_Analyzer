@@ -117,6 +117,13 @@ function buildFipsLookup(
   return result;
 }
 
+/** Abbreviate long status labels so the badge column stays fixed-width. */
+function shortStatus(s: string): string {
+  if (s === 'Service Area Expansion') return 'SAE';
+  if (s === 'Service Area Reduction') return 'SAR';
+  return s;
+}
+
 function statusVariant(displayStatus: string): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'pink' {
   switch (displayStatus) {
     case 'Closed':                  return 'danger';
@@ -204,11 +211,65 @@ interface MapModalProps {
   onClose: () => void;
 }
 
+// [minLng, minLat, maxLng, maxLat] for each state — used for map auto-zoom
+const STATE_BOUNDS: Record<string, [number, number, number, number]> = {
+  AK:[-179.2,51.2,-129.9,71.4], AL:[-88.5,30.1,-84.9,35.0], AR:[-94.6,33.0,-89.6,36.5],
+  AZ:[-114.8,31.3,-109.0,37.0], CA:[-124.5,32.5,-114.1,42.0], CO:[-109.1,36.9,-102.0,41.0],
+  CT:[-73.7,41.0,-71.8,42.1],  DC:[-77.1,38.8,-77.0,38.9],  DE:[-75.8,38.4,-75.0,39.8],
+  FL:[-87.6,24.4,-80.0,31.0],  GA:[-85.6,30.4,-81.0,35.0],  HI:[-160.3,18.9,-154.8,22.3],
+  IA:[-96.6,40.4,-90.1,43.5],  ID:[-117.2,42.0,-111.0,49.0], IL:[-91.5,36.9,-87.0,42.5],
+  IN:[-88.1,37.8,-84.8,41.8],  KS:[-102.1,37.0,-94.6,40.0], KY:[-89.6,36.5,-81.9,39.1],
+  LA:[-94.0,28.9,-88.8,33.0],  MA:[-73.5,41.2,-69.9,42.9],  MD:[-79.5,37.9,-74.9,39.7],
+  ME:[-71.1,43.0,-66.9,47.5],  MI:[-90.4,41.7,-82.1,48.3],  MN:[-97.2,43.5,-89.5,49.4],
+  MO:[-95.8,36.0,-89.1,40.6],  MS:[-91.7,30.1,-88.1,35.0],  MT:[-116.1,44.4,-104.0,49.0],
+  NC:[-84.3,33.8,-75.5,36.6],  ND:[-104.1,45.9,-96.6,49.0], NE:[-104.1,39.9,-95.3,43.0],
+  NH:[-72.6,42.7,-70.6,45.3],  NJ:[-75.6,38.9,-73.9,41.4],  NM:[-109.1,31.3,-103.0,37.0],
+  NV:[-120.0,35.0,-114.0,42.0], NY:[-79.8,40.5,-71.9,45.0], OH:[-84.8,38.4,-80.5,42.0],
+  OK:[-103.0,33.6,-94.4,37.0], OR:[-124.6,42.0,-116.5,46.3], PA:[-80.5,39.7,-74.7,42.3],
+  PR:[-67.9,17.9,-65.2,18.5],  RI:[-71.9,41.1,-71.1,42.0],  SC:[-83.4,32.0,-78.5,35.2],
+  SD:[-104.1,42.5,-96.4,45.9], TN:[-90.3,35.0,-81.6,36.7],  TX:[-106.7,25.8,-93.5,36.5],
+  UT:[-114.1,37.0,-109.0,42.0], VA:[-83.7,36.5,-75.2,39.5], VT:[-73.5,42.7,-71.5,45.0],
+  WA:[-124.8,45.5,-116.9,49.0], WI:[-92.9,42.5,-86.2,47.1], WV:[-82.6,37.2,-77.7,40.6],
+  WY:[-111.1,41.0,-104.0,45.0],
+};
+
 const CAT_FILL: Record<CountyCategory, string> = {
   renewed: '#0ea5e9',
   added:   '#10b981',
   removed: '#f43f5e',
 };
+
+// MAP_W / MAP_H must match the div dimensions below
+const MAP_W = 900;
+const MAP_H = 460;
+
+function computeProjection(states: string[]): { projection: string; projectionConfig: Record<string, unknown> } {
+  // Use AlbersUsa for empty / national plans
+  if (states.length === 0 || states.length > 4) {
+    return { projection: 'geoAlbersUsa', projectionConfig: {} };
+  }
+  // Compute union bounds of all relevant states
+  let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
+  for (const st of states) {
+    const b = STATE_BOUNDS[st];
+    if (!b) continue;
+    minLng = Math.min(minLng, b[0]); minLat = Math.min(minLat, b[1]);
+    maxLng = Math.max(maxLng, b[2]); maxLat = Math.max(maxLat, b[3]);
+  }
+  if (minLng === 180) return { projection: 'geoAlbersUsa', projectionConfig: {} };
+
+  const pad = 1.25; // padding factor
+  const lngSpan = (maxLng - minLng) * pad;
+  const latSpan  = (maxLat - minLat) * pad;
+  const scale = Math.min(
+    MAP_W  / (lngSpan * (Math.PI / 180)),
+    MAP_H / (latSpan  * (Math.PI / 180)),
+  ) * 0.88;
+  return {
+    projection: 'geoMercator',
+    projectionConfig: { center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2], scale: Math.round(scale) },
+  };
+}
 
 const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
   const rep = group.successor;
@@ -222,6 +283,12 @@ const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
     (geographies: GeographyItem[]) => buildFipsLookup(geographies, renewed, added, removed),
     [renewed, added, removed],
   );
+
+  const { projection, projectionConfig } = computeProjection(
+    [...new Set([...renewed, ...added, ...removed].map(c => c.state.toUpperCase()))],
+  );
+
+  const noData = (renewed.length + added.length + removed.length) === 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
@@ -263,14 +330,15 @@ const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
         </div>
 
         {/* Map */}
-        <div className="relative bg-slate-950" style={{ height: 480 }}>
-          {(renewed.length + added.length + removed.length) === 0 ? (
+        <div className="relative bg-slate-950" style={{ height: MAP_H }}>
+          {noData ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <p className="text-sm text-slate-500">No county service area data available.</p>
             </div>
           ) : (
             <ComposableMap
-              projection="geoAlbersUsa"
+              projection={projection}
+              projectionConfig={projectionConfig}
               style={{ width: '100%', height: '100%' }}
             >
               {/* County fills */}
@@ -287,9 +355,9 @@ const MapModal: React.FC<MapModalProps> = ({ group, onClose }) => {
                         stroke="#1e293b"
                         strokeWidth={0.3}
                         style={{
-                          default:  { outline: 'none' },
-                          hover:    { outline: 'none', opacity: cat ? 0.75 : 1 },
-                          pressed:  { outline: 'none' },
+                          default: { outline: 'none' },
+                          hover:   { outline: 'none', opacity: cat ? 0.75 : 1 },
+                          pressed: { outline: 'none' },
                         }}
                       />
                     );
@@ -471,7 +539,7 @@ export const CrosswalkAnalysis: React.FC = () => {
                   <div
                     key={gIdx}
                     className="grid items-center gap-x-3 p-3 bg-slate-900/50 border border-slate-800 rounded-xl hover:border-slate-700 transition-colors"
-                    style={{ gridTemplateColumns: '1fr 52px 1fr auto auto auto' }}
+                    style={{ gridTemplateColumns: 'minmax(0,1fr) 44px minmax(0,1fr) 108px 52px 72px' }}
                   >
                     {/* ── Col 1: Predecessor(s) ── */}
                     <div className="min-w-0">
@@ -481,17 +549,15 @@ export const CrosswalkAnalysis: React.FC = () => {
                           {sharedOrg}
                         </p>
                       )}
-                      <div className={cn('flex flex-col', isMany ? 'gap-0.5' : 'gap-0')}>
+                      <div className={cn('flex flex-col', isMany ? 'gap-1' : 'gap-0')}>
                         {group.predecessors.map((pred, pIdx) => (
                           <div key={pIdx} className="flex flex-col min-w-0">
                             <span className={cn('text-xs font-black truncate',
                               rep.is_new ? 'text-slate-500 line-through' : 'text-sky-400'
                             )}>
-                              {isMany ? `• ${pred.previous_plan_key}` : pred.previous_plan_key || '—'}
+                              {pred.previous_plan_key || '—'}
                             </span>
-                            {/* In consolidation rows only show plan IDs to keep rows compact.
-                                Full names are visible in the map/lineage modals. */}
-                            {!isMany && pred.previous_plan_name && (
+                            {pred.previous_plan_name && (
                               <span className="text-[10px] text-slate-500 font-medium truncate">
                                 {pred.previous_plan_name}
                               </span>
@@ -539,7 +605,7 @@ export const CrosswalkAnalysis: React.FC = () => {
 
                     {/* ── Col 4: Status badge ── */}
                     <div className="flex items-center">
-                      <Badge variant={statusVariant(resolvedDisplayStatus)} label={resolvedDisplayStatus} />
+                      <Badge variant={statusVariant(resolvedDisplayStatus)} label={shortStatus(resolvedDisplayStatus)} />
                     </div>
 
                     {/* ── Col 5: County metrics ── */}
