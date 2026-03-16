@@ -13,6 +13,12 @@ pub struct QueryEngine {
     pub latest_yyyymm: u32,
     pub prior_yyyymm: u32,
     pub lineage_engine: crate::query::lineage::LineageEngine,
+    /// Landscape-based footprints: (year, "contract_id-plan_id") → set of county names.
+    /// These come from the official CMS landscape files and are the ground-truth source for
+    /// which counties a plan operates in each year.
+    pub landscape_fp: HashMap<(u32, String), HashSet<String>>,
+    /// Landscape state index: (year, "contract_id-plan_id") → set of state abbreviations.
+    pub landscape_state: HashMap<(u32, String), HashSet<String>>,
 }
 
 impl QueryEngine {
@@ -69,6 +75,29 @@ impl QueryEngine {
             prior_yyyymm = if months_vec.len() >= 2 { months_vec[months_vec.len() - 2] } else { 0 };
         }
 
+        // Load landscape footprints from the ingested parquet files.
+        // These are the authoritative county counts for each plan/year.
+        let mut landscape_fp: HashMap<(u32, String), HashSet<String>> = HashMap::new();
+        let mut landscape_state: HashMap<(u32, String), HashSet<String>> = HashMap::new();
+        for year in [2024u32, 2025, 2026] {
+            let lp = store_dir.join("landscape").join("normalized").join(format!("year={}", year)).join("landscape.parquet");
+            if lp.exists() {
+                match storage::parquet_store::load_landscape_footprints(&lp) {
+                    Ok(rows) => {
+                        for r in rows {
+                            let key = format!("{}-{}", r.contract_id, r.plan_id);
+                            landscape_fp.entry((year, key.clone())).or_default().insert(r.county_name);
+                            if !r.state_abbreviation.is_empty() {
+                                landscape_state.entry((year, key)).or_default().insert(r.state_abbreviation);
+                            }
+                        }
+                        log::info!("QueryEngine: Loaded landscape footprints for year {}", year);
+                    }
+                    Err(e) => log::warn!("QueryEngine: Failed to load landscape for year {}: {}", year, e),
+                }
+            }
+        }
+
         Self {
             cache_enabled,
             plan_lookup,
@@ -78,6 +107,8 @@ impl QueryEngine {
             latest_yyyymm,
             prior_yyyymm,
             lineage_engine,
+            landscape_fp,
+            landscape_state,
         }
     }
 
@@ -953,40 +984,57 @@ impl QueryEngine {
         for (k, p) in plan_lookup.iter() {
             str_to_plan_keys.entry(format!("{}-{}", p.contract_id, p.plan_id)).or_default().push(*k);
         }
-        // Helper: union footprints across all u32 keys for a given "contract_id-plan_id" string key.
-        let get_fp = |str_key: &str, fp: &HashMap<u32, HashSet<u32>>| -> HashSet<u32> {
-            let mut result: HashSet<u32> = HashSet::new();
-            if let Some(keys) = str_to_plan_keys.get(str_key) {
-                for &k in keys {
-                    if let Some(counties) = fp.get(&k) { result.extend(counties.iter().cloned()); }
-                }
-            }
-            result
-        };
         // Helper: find the first matching PlanDim for a string key (for metadata lookups).
         let get_plan_dim = |str_key: &str| -> Option<&PlanDim> {
             str_to_plan_keys.get(str_key)?.iter().find_map(|k| plan_lookup.get(k))
         };
 
-        // Build county footprints from the enrollment series.
-        // A plan "operates in" a county in a given year if ANY month of that year has a
-        // recorded presence in the series (bitmap bit set), even if enrollment is zero.
-        // This matches landscape-file semantics where a plan is listed for a county even
-        // if no members enrolled there yet.
-        let mut prior_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
-        let mut curr_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
-        let prior_yr_start = (year - 1) * 100 + 1;
-        let prior_yr_end   = (year - 1) * 100 + 12;
-        let curr_yr_start  = year * 100 + 1;
-        let curr_yr_end    = year * 100 + 12;
-        for ((pk, ck), series) in series_cache.iter() {
-            if (prior_yr_start..=prior_yr_end).any(|m| series.get_enrollment(m).is_some()) {
-                prior_fp.entry(*pk).or_default().insert(*ck);
+        // Use landscape parquet footprints as the authoritative source of county membership.
+        // Landscape footprints are keyed (year, "contract_id-plan_id") → HashSet<county_name>.
+        // Fall back to enrollment series if landscape is unavailable for a given year.
+        let prior_year = year - 1;
+        let has_landscape_curr  = self.landscape_fp.keys().any(|(y, _)| *y == year);
+        let has_landscape_prior = self.landscape_fp.keys().any(|(y, _)| *y == prior_year);
+
+        // Series-based fallback footprints (used only if landscape isn't loaded).
+        let (series_prior_fp, series_curr_fp): (HashMap<String, HashSet<String>>, HashMap<String, HashSet<String>>) =
+        if !has_landscape_curr || !has_landscape_prior {
+            let mut prior_fp_s: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut curr_fp_s:  HashMap<String, HashSet<String>> = HashMap::new();
+            let prior_yr_start = prior_year * 100 + 1;
+            let prior_yr_end   = prior_year * 100 + 12;
+            let curr_yr_start  = year * 100 + 1;
+            let curr_yr_end    = year * 100 + 12;
+            if let Some(pl) = &self.plan_lookup {
+                for ((pk, ck), series) in series_cache.iter() {
+                    if let Some(p) = pl.get(pk) {
+                        let key = format!("{}-{}", p.contract_id, p.plan_id);
+                        let county_name = county_lookup.get(ck).map(|c| c.county_name.clone()).unwrap_or_default();
+                        if county_name.is_empty() { continue; }
+                        if (prior_yr_start..=prior_yr_end).any(|m| series.get_enrollment(m).is_some()) {
+                            prior_fp_s.entry(key.clone()).or_default().insert(county_name.clone());
+                        }
+                        if (curr_yr_start..=curr_yr_end).any(|m| series.get_enrollment(m).is_some()) {
+                            curr_fp_s.entry(key).or_default().insert(county_name);
+                        }
+                    }
+                }
             }
-            if (curr_yr_start..=curr_yr_end).any(|m| series.get_enrollment(m).is_some()) {
-                curr_fp.entry(*pk).or_default().insert(*ck);
+            (prior_fp_s, curr_fp_s)
+        } else {
+            (HashMap::new(), HashMap::new())
+        };
+
+        // Helper: get landscape county set for a plan-year, falling back to series.
+        let get_landscape_fp = |str_key: &str, yr: u32| -> HashSet<String> {
+            if let Some(set) = self.landscape_fp.get(&(yr, str_key.to_string())) {
+                set.clone()
+            } else if yr == year {
+                series_curr_fp.get(str_key).cloned().unwrap_or_default()
+            } else {
+                series_prior_fp.get(str_key).cloned().unwrap_or_default()
             }
-        }
+        };
 
         // Parse active filters — empty arrays treated as no-filter.
         let parse_str_set = |key: &str| -> Option<HashSet<String>> {
@@ -995,21 +1043,36 @@ impl QueryEngine {
                 if s.is_empty() { None } else { Some(s) }
             })
         };
-        let sel_orgs    = parse_str_set("parentOrgs");
-        let sel_states  = parse_str_set("states");
+        let sel_orgs     = parse_str_set("parentOrgs");
+        let sel_states   = parse_str_set("states");
         let sel_counties = parse_str_set("counties");
-        let sel_types   = parse_str_set("planTypes");
-        let sel_snp     = filters["snp"].as_bool();
-        let sel_egwp    = filters["eghp"].as_bool(); // filter key is "eghp" per FilterContext
+        let sel_types    = parse_str_set("planTypes");
+        let sel_snp      = filters["snp"].as_bool();
+        let sel_egwp     = filters["eghp"].as_bool(); // filter key is "eghp" per FilterContext
 
-        // Counts counties in a set that pass the active geo filter.
-        let count_in_geo = |set: &HashSet<u32>| -> usize {
-            set.iter().filter(|&&ck| {
-                let c = match county_lookup.get(&ck) { Some(c) => c, None => return false };
-                if let Some(states) = &sel_states { if !states.contains(&c.state_code) { return false; } }
-                if let Some(cties) = &sel_counties { if !cties.contains(&c.county_name) { return false; } }
-                true
-            }).count()
+        // Check whether a county name passes the geo filter.
+        let county_passes_geo = |county_nm: &str, plan_key: &str, yr: u32| -> bool {
+            if let Some(states) = &sel_states {
+                // Use landscape state index; fall back to county_lookup by name.
+                let plan_states = self.landscape_state.get(&(yr, plan_key.to_string()));
+                let in_state = match plan_states {
+                    Some(ps) => ps.iter().any(|s| states.contains(s)),
+                    None => {
+                        // Fallback: look up county name in county_lookup
+                        county_lookup.values().any(|c| c.county_name == county_nm && states.contains(&c.state_code))
+                    }
+                };
+                if !in_state { return false; }
+            }
+            if let Some(cties) = &sel_counties {
+                if !cties.contains(county_nm) { return false; }
+            }
+            true
+        };
+
+        // Count landscape counties for a plan that pass the geo filter.
+        let count_landscape_in_geo = |counties: &HashSet<String>, plan_key: &str, yr: u32| -> usize {
+            counties.iter().filter(|cn| county_passes_geo(cn, plan_key, yr)).count()
         };
 
         // Intermediate per-row data — stored before group-level county processing.
@@ -1034,7 +1097,7 @@ impl QueryEngine {
             filtered_counties: usize,
             counties_added: usize,
             counties_removed: usize,
-            prev_counties: HashSet<u32>,
+            prev_counties: HashSet<String>,
             org: Option<String>,
             plan_type: Option<String>,
             is_egwp: Option<bool>,
@@ -1094,36 +1157,26 @@ impl QueryEngine {
                 match plan_dim { Some(p) => if p.is_egwp != egwp { continue; }, None => continue }
             }
 
-            // County footprints — union across all u32 plan keys for this contract/plan string.
-            let prev_counties: HashSet<u32> = get_fp(&row.previous_plan_key, &prior_fp);
-            let curr_counties: HashSet<u32> = if is_terminated {
+            // County footprints — from landscape parquet (authoritative) or series fallback.
+            let prev_counties: HashSet<String> = get_landscape_fp(&row.previous_plan_key, prior_year);
+            let curr_counties: HashSet<String> = if is_terminated {
                 HashSet::new()
             } else {
-                get_fp(&row.current_plan_key, &curr_fp)
+                get_landscape_fp(&row.current_plan_key, year)
             };
 
-            // Geo filters — terminated plans are matched against their *prior* footprint
-            // (where they used to operate) so they still appear when filtering by a state
-            // they operated in before closing.  For display we show 0 current counties.
-            // If a non-terminated renewal has no curr footprint yet (data lag), fall back to
-            // the prior footprint for geo matching so the plan isn't silently dropped.
-            let geo_counties: &HashSet<u32> = if is_terminated {
-                &prev_counties
-            } else if curr_counties.is_empty() && !prev_counties.is_empty() {
-                &prev_counties
-            } else {
-                &curr_counties
-            };
-            if let Some(states) = &sel_states {
-                let ok = geo_counties.iter().any(|ck| county_lookup.get(ck).map(|c| states.contains(&c.state_code)).unwrap_or(false));
-                if !ok { continue; }
-            }
-            if let Some(cties) = &sel_counties {
-                let ok = geo_counties.iter().any(|ck| county_lookup.get(ck).map(|c| cties.contains(&c.county_name)).unwrap_or(false));
+            // Geo filter — terminated plans are matched against their *prior* footprint.
+            // Non-terminated plans with no current footprint fall back to prior for geo matching.
+            let geo_key = if is_terminated || curr_counties.is_empty() { &row.previous_plan_key } else { &row.current_plan_key };
+            let geo_yr  = if is_terminated || curr_counties.is_empty() { prior_year } else { year };
+            let geo_counties = if is_terminated || curr_counties.is_empty() { &prev_counties } else { &curr_counties };
+
+            if sel_states.is_some() || sel_counties.is_some() {
+                let ok = geo_counties.iter().any(|cn| county_passes_geo(cn, geo_key, geo_yr));
                 if !ok { continue; }
             }
 
-            // Raw county change.
+            // Raw county change (by county name).
             let raw_added   = curr_counties.difference(&prev_counties).count();
             let raw_removed = prev_counties.difference(&curr_counties).count();
 
@@ -1172,7 +1225,9 @@ impl QueryEngine {
 
             // Closed plans show 0 current counties — they no longer operate anywhere.
             let total_counties = if is_terminated { 0 } else { curr_counties.len() };
-            let filtered_counties = if is_terminated { 0 } else { count_in_geo(&curr_counties) };
+            let filtered_counties = if is_terminated { 0 } else {
+                count_landscape_in_geo(&curr_counties, &row.current_plan_key, year)
+            };
 
             intermed.push(IntermRow {
                 crosswalk_year: row.crosswalk_year,
@@ -1205,7 +1260,7 @@ impl QueryEngine {
         // === Pass 2: group-level county metrics for many-to-one mappings (Bug 5) ===
         // For each unique successor plan, union all predecessor footprints and compute
         // the true county change against the successor footprint.
-        let mut group_prev_union: HashMap<String, HashSet<u32>> = HashMap::new();
+        let mut group_prev_union: HashMap<String, HashSet<String>> = HashMap::new();
         let mut group_sizes: HashMap<String, usize> = HashMap::new();
         for ir in &intermed {
             if !ir.is_terminated && !ir.current_plan_key.is_empty() {
@@ -1217,7 +1272,7 @@ impl QueryEngine {
         let mut group_added_map: HashMap<String, usize> = HashMap::new();
         let mut group_removed_map: HashMap<String, usize> = HashMap::new();
         for (key, prev_union) in &group_prev_union {
-            let curr_set: HashSet<u32> = get_fp(key.as_str(), &curr_fp);
+            let curr_set: HashSet<String> = get_landscape_fp(key.as_str(), year);
             group_added_map.insert(key.clone(), curr_set.difference(prev_union).count());
             group_removed_map.insert(key.clone(), prev_union.difference(&curr_set).count());
         }

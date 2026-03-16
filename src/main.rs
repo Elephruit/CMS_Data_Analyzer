@@ -281,8 +281,8 @@ async fn main() -> anyhow::Result<()> {
                 }
                 cli::LandscapeCommands::Ingest { year, force } => {
                     log::info!("Ingesting Landscape data for year: {}, force: {}", year, force);
-                    // Placeholder for actual ingestion logic
-                    println!("Ingestion for year {} not yet fully implemented.", year);
+                    ingest::landscape::ingest_landscape_year(year, force, store_dir).await?;
+                    println!("Landscape ingestion complete for year {}.", year);
                 }
                 cli::LandscapeCommands::List => {
                     let landscape_dir = store_dir.join("landscape");

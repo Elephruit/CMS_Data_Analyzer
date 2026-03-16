@@ -336,20 +336,24 @@ export const CrosswalkAnalysis: React.FC = () => {
 
                       {/* Successor column */}
                       <div className="flex-1 min-w-0 flex flex-col justify-center">
-                        <span className={cn("text-xs font-black truncate",
-                          rep.is_terminated ? "text-slate-500 line-through" : "text-sky-400"
-                        )}>
-                          {rep.current_plan_key || '—'}
-                        </span>
-                        {rep.current_plan_name && (
-                          <span className="text-[10px] text-slate-500 font-medium truncate">
-                            {rep.current_plan_name}
-                          </span>
-                        )}
-                        {rep.plan_type && (
-                          <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter">
-                            {rep.plan_type}{rep.is_egwp ? ' · EGWP' : ''}
-                          </span>
+                        {rep.is_terminated ? (
+                          <span className="text-xs font-bold text-slate-600 italic">No successor</span>
+                        ) : (
+                          <>
+                            <span className="text-xs font-black text-sky-400 truncate">
+                              {rep.current_plan_key || '—'}
+                            </span>
+                            {rep.current_plan_name && (
+                              <span className="text-[10px] text-slate-500 font-medium truncate">
+                                {rep.current_plan_name}
+                              </span>
+                            )}
+                            {rep.plan_type && (
+                              <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter">
+                                {rep.plan_type}{rep.is_egwp ? ' · EGWP' : ''}
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
 

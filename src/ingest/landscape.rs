@@ -294,27 +294,45 @@ pub async fn ingest_landscape_year(year: i32, force: bool, store_dir: &Path) -> 
 }
 
 fn get_recursive_file_content(archive_path: &Path, target_full_path: &str) -> Result<Vec<u8>> {
+    // The target_full_path was built by scan_zip_bytes_recursive using "/" as separator.
+    // Nested zip files appear as path components ending in ".zip". We split the path at
+    // each ".zip/" boundary so that each segment is a full in-archive path (which may
+    // itself contain directory separators).
+    //
+    // Example:
+    //   "CY2006-CY2025.../CY2025-CY20YY.../CY2025_Landscape_202506.1.zip/CY2025_Landscape_202506.1/CY2025_Landscape_202506.1.csv"
+    // → zip_paths[0] = "CY2006-CY2025.../CY2025-CY20YY.../CY2025_Landscape_202506.1.zip"
+    //   remainder = "CY2025_Landscape_202506.1/CY2025_Landscape_202506.1.csv"
+
+    // Split into [<outer entry path>, <next entry path>, ..., <leaf file path>]
+    let mut segments: Vec<String> = Vec::new();
+    let mut remaining = target_full_path.to_string();
+    while let Some(pos) = remaining.find(".zip/") {
+        segments.push(remaining[..pos + 4].to_string()); // include ".zip"
+        remaining = remaining[pos + 5..].to_string();    // skip ".zip/"
+    }
+    segments.push(remaining); // final leaf (csv/xlsx/etc.)
+
+    // Open the outer archive from disk, read the first segment.
     let file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(file)?;
-    
-    // Path looks like "Parent.zip/Child.zip/File.csv"
-    let parts: Vec<&str> = target_full_path.split('/').collect();
-    
-    let mut current_bytes = Vec::new();
-    
-    // First part must be in the main archive
-    let mut zip_file = archive.by_name(parts[0])?;
-    zip_file.read_to_end(&mut current_bytes)?;
-    
-    for i in 1..parts.len() {
+    let mut current_bytes = {
+        let mut entry = archive.by_name(&segments[0])?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        buf
+    };
+
+    // For each subsequent segment, open current_bytes as a zip and drill in.
+    for seg in &segments[1..] {
         let cursor = std::io::Cursor::new(current_bytes);
-        let mut inner_archive = ZipArchive::new(cursor)?;
-        let mut inner_file = inner_archive.by_name(parts[i])?;
-        let mut next_bytes = Vec::new();
-        inner_file.read_to_end(&mut next_bytes)?;
-        current_bytes = next_bytes;
+        let mut inner = ZipArchive::new(cursor)?;
+        let mut entry = inner.by_name(seg)?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        current_bytes = buf;
     }
-    
+
     Ok(current_bytes)
 }
 
