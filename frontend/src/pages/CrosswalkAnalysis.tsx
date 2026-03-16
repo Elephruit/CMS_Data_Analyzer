@@ -33,7 +33,9 @@ interface CrosswalkRow {
   current_plan_id: string;
   current_plan_key: string;
   current_plan_name?: string;
+  // Raw status from source data; display_status is the simplified label for UI
   status: string;
+  display_status: string;
   is_new: boolean;
   is_terminated: boolean;
   is_expansion: boolean;
@@ -42,8 +44,47 @@ interface CrosswalkRow {
   filtered_counties: number;
   counties_added: number;
   counties_removed: number;
+  // Group metrics: when multiple predecessors map to one successor
+  group_size: number;
+  group_counties_added: number;
+  group_counties_removed: number;
   org?: string;
   plan_type?: string;
+  is_egwp?: boolean;
+}
+
+// Derive badge variant from display_status
+function statusVariant(row: CrosswalkRow): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'pink' {
+  if (row.is_terminated) return 'danger';
+  if (row.is_new) return 'primary';
+  if (row.is_expansion) return 'success';
+  if (row.is_reduction) return 'pink';
+  if (row.display_status === 'Consolidated') return 'warning';
+  return 'primary';
+}
+
+// Group rows by successor plan key for many-to-one rendering
+interface CrosswalkGroup {
+  groupKey: string;
+  predecessors: CrosswalkRow[];
+  successor: CrosswalkRow; // representative row (all rows share the same successor fields)
+}
+
+function groupRows(rows: CrosswalkRow[]): CrosswalkGroup[] {
+  const map = new Map<string, CrosswalkRow[]>();
+  for (const row of rows) {
+    // Terminated/new plans each form their own group
+    const key = (row.is_terminated || !row.current_plan_key)
+      ? `__term__${row.previous_plan_key}`
+      : row.current_plan_key;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(row);
+  }
+  const groups: CrosswalkGroup[] = [];
+  for (const [key, members] of map.entries()) {
+    groups.push({ groupKey: key, predecessors: members, successor: members[0] });
+  }
+  return groups;
 }
 
 interface CrosswalkData {
@@ -241,96 +282,102 @@ export const CrosswalkAnalysis: React.FC = () => {
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-separate border-spacing-y-2">
-                  <thead>
-                    <tr className="text-[10px] font-black uppercase text-slate-500 tracking-widest">
-                      <th className="px-4 py-2">Prior Year Plan ({data?.year ? data.year - 1 : ''})</th>
-                      <th className="px-4 py-2 text-center">Transition</th>
-                      <th className="px-4 py-2">Current Year Plan ({data?.year})</th>
-                      <th className="px-4 py-2">Status</th>
-                      <th className="px-4 py-2 text-right">Counties</th>
-                      <th className="px-4 py-2 text-right">Lineage</th>
-                    </tr>
-                  </thead>
-                  <tbody className="space-y-2">
-                    {filteredRows.map((row, idx) => {
-                      const { is_new: isNew, is_terminated: isTerminated, is_expansion, is_reduction } = row;
-                      const isConsolidated = row.status.toUpperCase().includes("CONSOLIDATED");
+              <div className="space-y-2">
+                {groupRows(filteredRows).map((group, gIdx) => {
+                  const rep = group.successor;
+                  const isMany = group.predecessors.length > 1;
+                  // For many-to-one, use group-level county metrics
+                  const displayAdded   = isMany ? rep.group_counties_added   : rep.counties_added;
+                  const displayRemoved = isMany ? rep.group_counties_removed : rep.counties_removed;
+                  const arrowColor = rep.is_terminated ? "text-rose-500"
+                    : rep.is_new ? "text-emerald-500"
+                    : rep.is_expansion ? "text-emerald-400"
+                    : rep.is_reduction ? "text-pink-400"
+                    : "text-sky-500";
 
-                      return (
-                        <tr key={idx} className="group hover:bg-slate-800/30 transition-colors">
-                          <td className="px-4 py-4 bg-slate-900/50 rounded-l-xl border-y border-l border-slate-800 group-hover:border-slate-700">
-                            <div className="flex flex-col">
-                              <span className={cn("text-xs font-black", isNew ? "text-slate-600 line-through" : "text-sky-400")}>
-                                {row.previous_plan_key || '—'}
+                  return (
+                    <div
+                      key={gIdx}
+                      className="flex items-stretch gap-2 p-3 bg-slate-900/50 border border-slate-800 rounded-xl hover:border-slate-700 transition-colors group"
+                    >
+                      {/* Predecessor column */}
+                      <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
+                        {group.predecessors.map((pred, pIdx) => (
+                          <div key={pIdx} className="flex flex-col">
+                            <span className={cn("text-xs font-black truncate", rep.is_new ? "text-slate-600 line-through" : "text-sky-400")}>
+                              {pred.previous_plan_key || '—'}
+                            </span>
+                            {pred.previous_plan_name && (
+                              <span className="text-[10px] text-slate-500 font-medium truncate">
+                                {pred.previous_plan_name}
                               </span>
-                              <span className="text-[10px] text-slate-500 font-medium truncate max-w-[200px]">
-                                {row.previous_plan_name || (isNew ? 'N/A' : '')}
+                            )}
+                            {pred.org && pIdx === 0 && (
+                              <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter truncate">
+                                {pred.org}
                               </span>
-                              {row.org && (
-                                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter truncate max-w-[200px]">
-                                  {row.org}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700 text-center">
-                            <ArrowRight className={cn(
-                              "w-4 h-4 mx-auto",
-                              isNew ? "text-emerald-500" : isTerminated ? "text-rose-500" : is_expansion ? "text-emerald-400" : is_reduction ? "text-amber-400" : "text-sky-500"
-                            )} />
-                          </td>
-                          <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700">
-                            <div className="flex flex-col">
-                              <span className={cn("text-xs font-black", isTerminated ? "text-slate-600 line-through" : "text-sky-400")}>
-                                {row.current_plan_key || '—'}
-                              </span>
-                              <span className="text-[10px] text-slate-500 font-medium truncate max-w-[200px]">
-                                {row.current_plan_name || (isTerminated ? 'N/A' : '')}
-                              </span>
-                              {row.plan_type && (
-                                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter">
-                                  {row.plan_type}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700">
-                            <Badge
-                              variant={isNew ? 'success' : isTerminated ? 'danger' : is_expansion ? 'success' : is_reduction ? 'warning' : isConsolidated ? 'warning' : 'primary'}
-                              label={row.status}
-                            />
-                          </td>
-                          <td className="px-4 py-4 bg-slate-900/50 border-y border-slate-800 group-hover:border-slate-700 text-right">
-                            <div className="flex flex-col items-end gap-0.5">
-                              <span className="text-xs font-bold text-slate-300">
-                                {row.filtered_counties > 0 && row.filtered_counties !== row.total_counties
-                                  ? `${row.filtered_counties} / ${row.total_counties}`
-                                  : row.total_counties}
-                              </span>
-                              {row.counties_added > 0 && (
-                                <span className="text-[9px] font-bold text-emerald-500">+{row.counties_added}</span>
-                              )}
-                              {row.counties_removed > 0 && (
-                                <span className="text-[9px] font-bold text-rose-500">-{row.counties_removed}</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-4 bg-slate-900/50 rounded-r-xl border-y border-r border-slate-800 group-hover:border-slate-700 text-right">
-                            <button
-                              onClick={() => fetchLineage(row)}
-                              className="p-2 hover:bg-sky-500/10 rounded-lg transition-all text-slate-500 hover:text-sky-400"
-                              title="View Plan Lineage"
-                            >
-                              <History className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Arrow(s) */}
+                      <div className="flex flex-col items-center justify-center gap-0.5 px-1">
+                        {group.predecessors.map((_, pIdx) => (
+                          <ArrowRight key={pIdx} className={cn("w-3 h-3 shrink-0", arrowColor)} />
+                        ))}
+                      </div>
+
+                      {/* Successor column */}
+                      <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <span className={cn("text-xs font-black truncate", rep.is_terminated ? "text-slate-600 line-through" : "text-sky-400")}>
+                          {rep.current_plan_key || '—'}
+                        </span>
+                        {(rep.current_plan_name || rep.is_terminated) && (
+                          <span className="text-[10px] text-slate-500 font-medium truncate">
+                            {rep.current_plan_name || 'N/A'}
+                          </span>
+                        )}
+                        {rep.plan_type && (
+                          <span className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter">
+                            {rep.plan_type}{rep.is_egwp ? ' · EGWP' : ''}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Status badge */}
+                      <div className="flex items-center shrink-0">
+                        <Badge variant={statusVariant(rep)} label={rep.display_status} />
+                      </div>
+
+                      {/* County metrics */}
+                      <div className="flex flex-col items-end justify-center shrink-0 min-w-[60px]">
+                        <span className="text-xs font-bold text-slate-300">
+                          {rep.filtered_counties > 0 && rep.filtered_counties !== rep.total_counties
+                            ? `${rep.filtered_counties}/${rep.total_counties}`
+                            : rep.total_counties || '—'}
+                        </span>
+                        {displayAdded > 0 && (
+                          <span className="text-[9px] font-bold text-emerald-500">+{displayAdded}</span>
+                        )}
+                        {displayRemoved > 0 && (
+                          <span className="text-[9px] font-bold text-rose-500">-{displayRemoved}</span>
+                        )}
+                      </div>
+
+                      {/* Lineage button */}
+                      <div className="flex items-center shrink-0">
+                        <button
+                          onClick={() => fetchLineage(rep)}
+                          className="p-2 hover:bg-sky-500/10 rounded-lg transition-all text-slate-500 hover:text-sky-400"
+                          title="View Plan Lineage"
+                        >
+                          <History className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </ChartCard>

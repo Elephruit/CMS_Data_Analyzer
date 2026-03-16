@@ -939,14 +939,14 @@ impl QueryEngine {
         let county_lookup = match &self.county_lookup { Some(l) => l, None => return Err(anyhow::anyhow!("County lookup required")), };
         let series_cache = match &self.series_cache { Some(c) => c, None => return Err(anyhow::anyhow!("Series cache required")), };
 
-        // Build str-key → u32 plan_key map for footprint lookups
+        // Build str-key → u32 plan_key map (covers plans from CPSC contract/enrollment data,
+        // including 800-series EGWP plans that may not appear in landscape files).
         let mut str_to_plan_key: HashMap<String, u32> = HashMap::new();
         for (k, p) in plan_lookup.iter() {
             str_to_plan_key.insert(format!("{}-{}", p.contract_id, p.plan_id), *k);
         }
 
-        // Build county footprints: plan_key_u32 → Set<county_key> for each year
-        // A plan "serves" a county in a year if it has any enrollment in that year.
+        // Build county footprints for prior and current year from enrollment series.
         let mut prior_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
         let mut curr_fp: HashMap<u32, HashSet<u32>> = HashMap::new();
         let prior_yr_start = (year - 1) * 100 + 1;
@@ -968,32 +968,63 @@ impl QueryEngine {
             }
         }
 
-        // Parse active filters, treating empty arrays as no-filter
-        let sel_orgs: Option<HashSet<String>> = filters["parentOrgs"].as_array().and_then(|a| {
-            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
-            if s.is_empty() { None } else { Some(s) }
-        });
-        let sel_states: Option<HashSet<String>> = filters["states"].as_array().and_then(|a| {
-            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
-            if s.is_empty() { None } else { Some(s) }
-        });
-        let sel_counties: Option<HashSet<String>> = filters["counties"].as_array().and_then(|a| {
-            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
-            if s.is_empty() { None } else { Some(s) }
-        });
-        let sel_types: Option<HashSet<String>> = filters["planTypes"].as_array().and_then(|a| {
-            let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
-            if s.is_empty() { None } else { Some(s) }
-        });
-        let sel_snp = filters["snp"].as_bool();
+        // Parse active filters — empty arrays treated as no-filter.
+        let parse_str_set = |key: &str| -> Option<HashSet<String>> {
+            filters[key].as_array().and_then(|a| {
+                let s: HashSet<String> = a.iter().filter_map(|v| v.as_str().map(|x| x.to_string())).collect();
+                if s.is_empty() { None } else { Some(s) }
+            })
+        };
+        let sel_orgs    = parse_str_set("parentOrgs");
+        let sel_states  = parse_str_set("states");
+        let sel_counties = parse_str_set("counties");
+        let sel_types   = parse_str_set("planTypes");
+        let sel_snp     = filters["snp"].as_bool();
+        let sel_egwp    = filters["eghp"].as_bool(); // filter key is "eghp" per FilterContext
 
-        let mut total_renewals = 0i64; let mut total_consolidations = 0i64; let mut total_new = 0i64;
-        let mut total_terminated = 0i64; let mut total_sae = 0i64; let mut total_sar = 0i64;
-        let mut enriched_rows: Vec<serde_json::Value> = Vec::new();
+        // Counts counties in a set that pass the active geo filter.
+        let count_in_geo = |set: &HashSet<u32>| -> usize {
+            set.iter().filter(|&&ck| {
+                let c = match county_lookup.get(&ck) { Some(c) => c, None => return false };
+                if let Some(states) = &sel_states { if !states.contains(&c.state_code) { return false; } }
+                if let Some(cties) = &sel_counties { if !cties.contains(&c.county_name) { return false; } }
+                true
+            }).count()
+        };
+
+        // Intermediate per-row data — stored before group-level county processing.
+        struct IntermRow {
+            crosswalk_year: i32,
+            previous_contract_id: String,
+            previous_plan_id: String,
+            previous_plan_key: String,
+            previous_plan_name: Option<String>,
+            current_contract_id: String,
+            current_plan_id: String,
+            current_plan_key: String,
+            current_plan_name: Option<String>,
+            raw_status: String,
+            final_status: String,
+            display_status: String,
+            is_new: bool,
+            is_terminated: bool,
+            is_expansion: bool,
+            is_reduction: bool,
+            total_counties: usize,
+            filtered_counties: usize,
+            counties_added: usize,
+            counties_removed: usize,
+            prev_counties: HashSet<u32>,
+            org: Option<String>,
+            plan_type: Option<String>,
+            is_egwp: Option<bool>,
+        }
+
+        // === Pass 1: filter rows and compute per-row metrics ===
+        let mut intermed: Vec<IntermRow> = Vec::new();
 
         for row in &crosswalk_rows {
-            // Determine effective status: also infer termination from current plan ID fields
-            // in case the status column was not captured or is inconsistent.
+            // Infer termination from plan ID fields when status column is absent/generic.
             let effective_status = {
                 let s_up = row.status.to_uppercase();
                 if s_up.contains("TERMINATED") || s_up.contains("NON-RENEWED") {
@@ -1012,8 +1043,7 @@ impl QueryEngine {
             let is_terminated = s_up.contains("TERMINATED") || s_up.contains("NON-RENEWED");
             let is_new_plan = (s_up.contains("NEW") || s_up.contains("INITIAL")) && !is_terminated;
 
-            // For terminated/new plans, use previous plan key for org/type/snp lookups.
-            // Terminated plans have no valid current plan to look up.
+            // Use previous plan for metadata lookups on terminated rows.
             let ref_key = if is_terminated || row.current_plan_key.is_empty() {
                 &row.previous_plan_key
             } else {
@@ -1021,7 +1051,7 @@ impl QueryEngine {
             };
             let plan_dim = str_to_plan_key.get(ref_key.as_str()).and_then(|pk| plan_lookup.get(pk));
 
-            // --- Filters ---
+            // Metadata filters (org, type, SNP, EGWP — sourced from CPSC contract data via plan_lookup).
             if let Some(orgs) = &sel_orgs {
                 match plan_dim { Some(p) => if !orgs.contains(&p.parent_org) { continue; }, None => continue }
             }
@@ -1031,8 +1061,11 @@ impl QueryEngine {
             if let Some(snp) = sel_snp {
                 match plan_dim { Some(p) => if p.is_snp != snp { continue; }, None => continue }
             }
+            if let Some(egwp) = sel_egwp {
+                match plan_dim { Some(p) => if p.is_egwp != egwp { continue; }, None => continue }
+            }
 
-            // Build county footprints for this row
+            // County footprints.
             let prev_counties: HashSet<u32> = str_to_plan_key.get(row.previous_plan_key.as_str())
                 .and_then(|pk| prior_fp.get(pk)).cloned().unwrap_or_default();
             let curr_counties: HashSet<u32> = if is_terminated {
@@ -1042,68 +1075,157 @@ impl QueryEngine {
                     .and_then(|pk| curr_fp.get(pk)).cloned().unwrap_or_default()
             };
 
-            // Geo filtering: use prior footprint for terminated plans (they had a footprint before exit)
+            // Geo filters — terminated plans are matched against prior footprint.
             let geo_counties = if is_terminated { &prev_counties } else { &curr_counties };
-
             if let Some(states) = &sel_states {
-                let in_state = geo_counties.iter().any(|ck| {
-                    county_lookup.get(ck).map(|c| states.contains(&c.state_code)).unwrap_or(false)
-                });
-                if !in_state { continue; }
+                let ok = geo_counties.iter().any(|ck| county_lookup.get(ck).map(|c| states.contains(&c.state_code)).unwrap_or(false));
+                if !ok { continue; }
             }
-            if let Some(counties) = &sel_counties {
-                let in_county = geo_counties.iter().any(|ck| {
-                    county_lookup.get(ck).map(|c| counties.contains(&c.county_name)).unwrap_or(false)
-                });
-                if !in_county { continue; }
+            if let Some(cties) = &sel_counties {
+                let ok = geo_counties.iter().any(|ck| county_lookup.get(ck).map(|c| cties.contains(&c.county_name)).unwrap_or(false));
+                if !ok { continue; }
             }
 
-            // Accumulate totals
-            if s_up.contains("CONSOLIDATED") { total_consolidations += 1; }
-            else if s_up.contains("RENEWAL") && s_up.contains("SAE") { total_sae += 1; }
-            else if s_up.contains("RENEWAL") && s_up.contains("SAR") { total_sar += 1; }
-            else if s_up.contains("RENEWAL") { total_renewals += 1; }
-            else if is_new_plan { total_new += 1; }
-            else if is_terminated { total_terminated += 1; }
+            // Raw county change.
+            let raw_added   = curr_counties.difference(&prev_counties).count();
+            let raw_removed = prev_counties.difference(&curr_counties).count();
 
-            // Compute service-area change metrics
-            let counties_added: usize = curr_counties.difference(&prev_counties).count();
-            let counties_removed: usize = prev_counties.difference(&curr_counties).count();
+            // Status reconciliation (Bug 1): a plain renewal with a non-zero footprint
+            // change is a contradiction — let the geography drive the final classification.
+            let is_plain_renewal = s_up.contains("RENEWAL")
+                && !s_up.contains("SAE") && !s_up.contains("SAR")
+                && !s_up.contains("CONSOLIDATED")
+                && !is_terminated && !is_new_plan;
 
-            // Count counties within the active geo filter (for filtered_counties display)
-            let count_in_filter = |set: &HashSet<u32>| -> usize {
-                set.iter().filter(|&&ck| {
-                    let c = match county_lookup.get(&ck) { Some(c) => c, None => return false };
-                    if let Some(states) = &sel_states { if !states.contains(&c.state_code) { return false; } }
-                    if let Some(cties) = &sel_counties { if !cties.contains(&c.county_name) { return false; } }
-                    true
-                }).count()
+            let (final_status, final_added, final_removed) = if is_plain_renewal && (raw_added > 0 || raw_removed > 0) {
+                if raw_added > 0 && raw_removed == 0 {
+                    ("Renewal Plan with SAE".to_string(), raw_added, 0usize)
+                } else if raw_removed > 0 && raw_added == 0 {
+                    ("Renewal Plan with SAR".to_string(), 0usize, raw_removed)
+                } else if raw_added >= raw_removed {
+                    ("Renewal Plan with SAE".to_string(), raw_added, raw_removed)
+                } else {
+                    ("Renewal Plan with SAR".to_string(), raw_added, raw_removed)
+                }
+            } else {
+                (effective_status.clone(), raw_added, raw_removed)
+            };
+
+            let fs_up = final_status.to_uppercase();
+            let is_expansion = final_added > 0 && final_removed == 0 && !is_new_plan && !is_terminated;
+            let is_reduction = final_removed > 0 && final_added == 0 && !is_new_plan && !is_terminated;
+
+            // Display status mapping (Bug 3).
+            let display_status = if is_terminated {
+                "Closed"
+            } else if is_new_plan {
+                "New Plan"
+            } else if fs_up.contains("CONSOLIDATED") {
+                "Consolidated"
+            } else if fs_up.contains("SAE") || is_expansion {
+                "Service Area Expansion"
+            } else if fs_up.contains("SAR") || is_reduction {
+                "Service Area Reduction"
+            } else {
+                "Renewal"
             };
 
             let total_counties = if is_terminated { prev_counties.len() } else { curr_counties.len() };
-            let filtered_counties = count_in_filter(if is_terminated { &prev_counties } else { &curr_counties });
+            let filtered_counties = count_in_geo(if is_terminated { &prev_counties } else { &curr_counties });
+
+            intermed.push(IntermRow {
+                crosswalk_year: row.crosswalk_year,
+                previous_contract_id: row.previous_contract_id.clone(),
+                previous_plan_id: row.previous_plan_id.clone(),
+                previous_plan_key: row.previous_plan_key.clone(),
+                previous_plan_name: row.previous_plan_name.clone(),
+                current_contract_id: row.current_contract_id.clone(),
+                current_plan_id: row.current_plan_id.clone(),
+                current_plan_key: row.current_plan_key.clone(),
+                current_plan_name: row.current_plan_name.clone(),
+                raw_status: row.status.clone(),
+                final_status,
+                display_status: display_status.to_string(),
+                is_new: is_new_plan,
+                is_terminated,
+                is_expansion,
+                is_reduction,
+                total_counties,
+                filtered_counties,
+                counties_added: final_added,
+                counties_removed: final_removed,
+                prev_counties,
+                org: plan_dim.map(|p| p.parent_org.clone()),
+                plan_type: plan_dim.map(|p| p.plan_type.clone()),
+                is_egwp: plan_dim.map(|p| p.is_egwp),
+            });
+        }
+
+        // === Pass 2: group-level county metrics for many-to-one mappings (Bug 5) ===
+        // For each unique successor plan, union all predecessor footprints and compute
+        // the true county change against the successor footprint.
+        let mut group_prev_union: HashMap<String, HashSet<u32>> = HashMap::new();
+        let mut group_sizes: HashMap<String, usize> = HashMap::new();
+        for ir in &intermed {
+            if !ir.is_terminated && !ir.current_plan_key.is_empty() {
+                let entry = group_prev_union.entry(ir.current_plan_key.clone()).or_default();
+                entry.extend(ir.prev_counties.iter().cloned());
+                *group_sizes.entry(ir.current_plan_key.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut group_added_map: HashMap<String, usize> = HashMap::new();
+        let mut group_removed_map: HashMap<String, usize> = HashMap::new();
+        for (key, prev_union) in &group_prev_union {
+            let curr_set: HashSet<u32> = str_to_plan_key.get(key.as_str())
+                .and_then(|pk| curr_fp.get(pk)).cloned().unwrap_or_default();
+            group_added_map.insert(key.clone(), curr_set.difference(prev_union).count());
+            group_removed_map.insert(key.clone(), prev_union.difference(&curr_set).count());
+        }
+
+        // === Pass 3: build final JSON and accumulate summary totals ===
+        let mut total_renewals = 0i64; let mut total_consolidations = 0i64; let mut total_new = 0i64;
+        let mut total_terminated = 0i64; let mut total_sae = 0i64; let mut total_sar = 0i64;
+        let mut enriched_rows: Vec<serde_json::Value> = Vec::new();
+
+        for ir in intermed.into_iter().take(1000) {
+            let fs_up = ir.final_status.to_uppercase();
+            if fs_up.contains("CONSOLIDATED") { total_consolidations += 1; }
+            else if fs_up.contains("SAE") { total_sae += 1; }
+            else if fs_up.contains("SAR") { total_sar += 1; }
+            else if fs_up.contains("RENEWAL") { total_renewals += 1; }
+            else if ir.is_new { total_new += 1; }
+            else if ir.is_terminated { total_terminated += 1; }
+
+            let group_size = group_sizes.get(&ir.current_plan_key).cloned().unwrap_or(1);
+            let g_added   = group_added_map.get(&ir.current_plan_key).cloned().unwrap_or(ir.counties_added);
+            let g_removed = group_removed_map.get(&ir.current_plan_key).cloned().unwrap_or(ir.counties_removed);
 
             enriched_rows.push(serde_json::json!({
-                "crosswalk_year":        row.crosswalk_year,
-                "previous_contract_id":  row.previous_contract_id,
-                "previous_plan_id":      row.previous_plan_id,
-                "previous_plan_key":     row.previous_plan_key,
-                "previous_plan_name":    row.previous_plan_name,
-                "current_contract_id":   row.current_contract_id,
-                "current_plan_id":       row.current_plan_id,
-                "current_plan_key":      row.current_plan_key,
-                "current_plan_name":     row.current_plan_name,
-                "status":                effective_status,
-                "is_new":                is_new_plan,
-                "is_terminated":         is_terminated,
-                "is_expansion":          counties_added > 0 && counties_removed == 0 && !is_new_plan && !is_terminated,
-                "is_reduction":          counties_removed > 0 && counties_added == 0 && !is_new_plan && !is_terminated,
-                "total_counties":        total_counties,
-                "filtered_counties":     filtered_counties,
-                "counties_added":        counties_added,
-                "counties_removed":      counties_removed,
-                "org":                   plan_dim.map(|p| p.parent_org.as_str()),
-                "plan_type":             plan_dim.map(|p| p.plan_type.as_str()),
+                "crosswalk_year":         ir.crosswalk_year,
+                "previous_contract_id":   ir.previous_contract_id,
+                "previous_plan_id":       ir.previous_plan_id,
+                "previous_plan_key":      ir.previous_plan_key,
+                "previous_plan_name":     ir.previous_plan_name,
+                "current_contract_id":    ir.current_contract_id,
+                "current_plan_id":        ir.current_plan_id,
+                "current_plan_key":       ir.current_plan_key,
+                "current_plan_name":      ir.current_plan_name,
+                "status":                 ir.raw_status,
+                "display_status":         ir.display_status,
+                "is_new":                 ir.is_new,
+                "is_terminated":          ir.is_terminated,
+                "is_expansion":           ir.is_expansion,
+                "is_reduction":           ir.is_reduction,
+                "total_counties":         ir.total_counties,
+                "filtered_counties":      ir.filtered_counties,
+                "counties_added":         ir.counties_added,
+                "counties_removed":       ir.counties_removed,
+                "group_size":             group_size,
+                "group_counties_added":   g_added,
+                "group_counties_removed": g_removed,
+                "org":                    ir.org,
+                "plan_type":              ir.plan_type,
+                "is_egwp":                ir.is_egwp,
             }));
         }
 
@@ -1118,7 +1240,7 @@ impl QueryEngine {
                 "sae":            total_sae,
                 "sar":            total_sar,
             },
-            "rows": enriched_rows.into_iter().take(1000).collect::<Vec<_>>()
+            "rows": enriched_rows
         }))
     }
 

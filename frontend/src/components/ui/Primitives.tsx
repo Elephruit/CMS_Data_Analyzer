@@ -114,7 +114,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, action 
 
 interface BadgeProps {
   label: string;
-  variant?: 'primary' | 'success' | 'warning' | 'danger' | 'neutral';
+  variant?: 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'pink';
   className?: string;
 }
 
@@ -125,6 +125,7 @@ export const Badge: React.FC<BadgeProps> = ({ label, variant = 'primary', classN
     warning: "bg-amber-500/10 text-amber-400 border-amber-500/20",
     danger: "bg-rose-500/10 text-rose-400 border-rose-500/20",
     neutral: "bg-slate-500/10 text-slate-400 border-slate-500/20",
+    pink: "bg-pink-500/10 text-pink-400 border-pink-500/20",
   };
 
   return (
