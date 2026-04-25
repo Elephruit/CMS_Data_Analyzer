@@ -19,12 +19,12 @@ async fn main() -> anyhow::Result<()> {
     let store_dir = std::path::Path::new("store");
 
     match cli.command {
-        Commands::FetchMonth { month, force } => {
+        Some(Commands::FetchMonth { month, force }) => {
             log::info!("Fetching month: {}, force: {}", month, force);
             let month: model::YearMonth = month.parse()?;
             ingest::ingest_month(month, force, store_dir).await?;
         }
-        Commands::FetchRange { from, to, force } => {
+        Some(Commands::FetchRange { from, to, force }) => {
             log::info!("Fetching range: from {} to {}, force: {}", from, to, force);
             let start_month: model::YearMonth = from.parse()?;
             let end_month: model::YearMonth = to.parse()?;
@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
                 current = model::YearMonth::new(next_year, next_month)?;
             }
         }
-        Commands::ListMonths => {
+        Some(Commands::ListMonths) => {
             log::info!("Listing months");
             let manifest_path = store_dir.join("manifests").join("months.json");
             let manifest = storage::manifests::load_manifest(&manifest_path)?;
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("- {}", month);
             }
         }
-        Commands::ValidateStore => {
+        Some(Commands::ValidateStore) => {
             log::info!("Validating store");
             
             let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
@@ -79,17 +79,13 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::RepairDim => {
+        Some(Commands::RepairDim) => {
             log::info!("Repairing plan dimension: deduplicating per-month plan versions...");
 
             let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
             let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
             let total_before = plans.len();
 
-            // Group all plan_keys by (natural_key, valid_from_month).
-            // Keep the LOWEST plan_key per group as canonical; the rest are duplicates
-            // created when the same month was processed after a metadata change had
-            // established a later "current" version — causing one new plan_key per row.
             let mut canonical: std::collections::HashMap<(String, u32), u32> = std::collections::HashMap::new();
             for p in &plans {
                 let nk = format!("{}|{}", p.contract_id, p.plan_id);
@@ -99,7 +95,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Build remap: duplicate_plan_key -> canonical_plan_key
             let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
             for p in &plans {
                 let nk = format!("{}|{}", p.contract_id, p.plan_id);
@@ -115,12 +110,10 @@ async fn main() -> anyhow::Result<()> {
             if remap.is_empty() {
                 println!("No duplicates found. Plan dimension is clean.");
             } else {
-                // Rewrite plan_dim without duplicates
                 let clean_plans: Vec<_> = plans.into_iter().filter(|p| !remap.contains_key(&p.plan_key)).collect();
                 storage::parquet_store::save_plan_dim(&clean_plans, &plan_dim_path)?;
                 println!("Plans after repair: {}", clean_plans.len());
 
-                // Remap series parquets: replace duplicate plan_keys with canonical ones
                 let facts_dir = store_dir.join("facts");
                 let mut files_updated = 0usize;
                 if facts_dir.exists() {
@@ -133,7 +126,6 @@ async fn main() -> anyhow::Result<()> {
                             let series_path = state_path.join("plan_county_series.parquet");
                             let mut series_list = storage::parquet_store::load_series_partition(&series_path)?;
                             let mut changed = false;
-                            // Remap plan_keys and merge any now-identical (plan_key, county_key) pairs
                             let mut merged: std::collections::HashMap<(u32, u32), crate::model::PlanCountySeries> = std::collections::HashMap::new();
                             for mut s in series_list.drain(..) {
                                 if let Some(&canon_key) = remap.get(&s.plan_key) {
@@ -142,7 +134,6 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 let key = (s.plan_key, s.county_key);
                                 if let Some(existing) = merged.get_mut(&key) {
-                                    // Merge duplicate (same plan, same county) series
                                     let bitmap = s.presence_bitmap;
                                     let start_year = (s.start_month_key / 100) as i32;
                                     let start_month = (s.start_month_key % 100) as i32;
@@ -175,12 +166,6 @@ async fn main() -> anyhow::Result<()> {
                 println!("Repair complete. Run rebuild-cache to refresh the query cache.");
             }
 
-            // Phase 2: Fix invalid validity windows (valid_to < valid_from).
-            // These arise when the earliest ingested month for a plan ends up as the
-            // canonical plan_key but carries a valid_to that predates its valid_from —
-            // making it invisible to all queries.  Rebuild the validity chain for every
-            // natural_key group by sorting versions and deriving valid_to from the next
-            // version's valid_from.
             {
                 let plans_v2 = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
                 let invalid_count = plans_v2.iter().filter(|p| {
@@ -219,30 +204,23 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::RebuildCache => {
+        Some(Commands::RebuildCache) => {
             log::info!("Rebuilding cache");
             let cache_dir = store_dir.join("cache");
             std::fs::create_dir_all(&cache_dir)?;
 
-            // 1. Plan Lookup
             let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
             let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
             let plan_map: std::collections::HashMap<u32, model::PlanDim> = plans.into_iter().map(|p| (p.plan_key, p)).collect();
             storage::binary_cache::save_plan_lookup(&plan_map, &cache_dir.join("plan_lookup.bin"))?;
             log::info!("Cached {} plans", plan_map.len());
 
-            // 2. County Lookup
             let county_dim_path = store_dir.join("dims").join("county_dim.parquet");
             let counties = storage::parquet_store::load_county_dim(&county_dim_path)?;
-            // Use natural key for the primary lookup file, but QueryEngine will optimize it
             let county_map: std::collections::HashMap<String, model::CountyDim> = counties.into_iter().map(|c| (format!("{}|{}", c.state_code, c.county_name), c)).collect();
             storage::binary_cache::save_county_lookup(&county_map, &cache_dir.join("county_lookup.bin"))?;
             log::info!("Cached {} counties", county_map.len());
 
-            // 3. Series Cache
-            // Series are partitioned by year, so the same (plan_key, county_key) may appear
-            // in multiple year partitions (e.g. year=2024 has Dec data, year=2025 has Jan/Feb).
-            // We must MERGE them rather than overwrite, or earlier months get dropped.
             let facts_dir = store_dir.join("facts");
             let mut all_series: std::collections::HashMap<(u32, u32), model::PlanCountySeries> = std::collections::HashMap::new();
             if facts_dir.exists() {
@@ -263,7 +241,6 @@ async fn main() -> anyhow::Result<()> {
                         for new_s in series_list {
                             let key = (new_s.plan_key, new_s.county_key);
                             if let Some(existing) = all_series.get_mut(&key) {
-                                // Merge: decode each month from new_s and add into existing
                                 let bitmap = new_s.presence_bitmap;
                                 let start_year = (new_s.start_month_key / 100) as i32;
                                 let start_month = (new_s.start_month_key % 100) as i32;
@@ -290,11 +267,11 @@ async fn main() -> anyhow::Result<()> {
             storage::binary_cache::save_series_cache(&all_series, &cache_dir.join("series_values.bin"))?;
             log::info!("Cached {} series", all_series.len());
         }
-        Commands::Serve { port } => {
+        Some(Commands::Serve { port }) => {
             log::info!("Starting server on port {}", port);
             api::server::start_server(port, store_dir).await?;
         }
-        Commands::ListPlans { limit } => {
+        Some(Commands::ListPlans { limit }) => {
             let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
             let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
             println!("Listing first {} plans:", limit);
@@ -302,14 +279,13 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}|{}: {} (Org: {}, Type: {}, Key: {})", plan.contract_id, plan.plan_id, plan.plan_name, plan.parent_org, plan.plan_type, plan.plan_key);
             }
         }
-        Commands::Query { export, query_command } => {
+        Some(Commands::Query { export, query_command }) => {
             let engine = query::read_api::QueryEngine::new(store_dir);
             let mut results_json = serde_json::Value::Null;
 
             match query_command {
                 cli::QueryCommands::PlanTrend { contract, plan, state, county } => {
                     log::info!("Querying plan trend: contract: {}, plan: {}, state: {:?}, county: {:?}", contract, plan, state, county);
-                    
                     if let Some(plan_key) = engine.get_plan_key(&contract, &plan)? {
                         let trend = engine.get_plan_trend(plan_key)?;
                         println!("Trend for {}|{}:", contract, plan);
@@ -328,7 +304,6 @@ async fn main() -> anyhow::Result<()> {
                 cli::QueryCommands::CountySnapshot { state, county, month } => {
                     log::info!("Querying county snapshot: state: {}, county: {}, month: {}", state, county, month);
                     let ym: model::YearMonth = month.parse()?;
-                    
                     if let Some(county_key) = engine.get_county_key(&state, &county)? {
                         let snapshot = engine.get_county_snapshot(county_key, ym)?;
                         println!("Snapshot for {}, {} in {}:", county, state, ym);
@@ -351,7 +326,6 @@ async fn main() -> anyhow::Result<()> {
                     log::info!("Querying state rollup: state: {}, from: {}, to: {}", state, from, to);
                     let start_month: model::YearMonth = from.parse()?;
                     let end_month: model::YearMonth = to.parse()?;
-                    
                     let rollup = engine.get_state_rollup(&state, start_month, end_month)?;
                     println!("Rollup for {}:", state.to_uppercase());
                     for (month, enrollment) in &rollup {
@@ -368,7 +342,6 @@ async fn main() -> anyhow::Result<()> {
                     log::info!("Querying top movers: state: {:?}, from: {}, to: {}, limit: {}", state, from, to, limit);
                     let start_month: model::YearMonth = from.parse()?;
                     let end_month: model::YearMonth = to.parse()?;
-                    
                     let filters_json = if let Some(ref s) = state {
                         serde_json::json!({ "states": [s] })
                     } else {
@@ -397,6 +370,11 @@ async fn main() -> anyhow::Result<()> {
                     log::info!("Exported results to {}", path);
                 }
             }
+        }
+        None => {
+            let port = 3000;
+            log::info!("No command provided, defaulting to starting server on port {}", port);
+            api::server::start_server(port, store_dir).await?;
         }
     }
 

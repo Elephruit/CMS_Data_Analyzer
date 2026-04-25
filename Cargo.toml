@@ -67,3 +67,5 @@ env_logger = "0.11"
 # Web server
 axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+rust-embed = "8.0"
+mime_guess = "2.0"

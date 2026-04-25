@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::model::{PlanDim, CountyDim, PlanCountySeries};
 
 pub fn save_plan_lookup(plans: &HashMap<u32, PlanDim>, path: &Path) -> Result<()> {
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     let mut encoder = zstd::stream::Encoder::new(file, 3)?;
     bincode::serialize_into(&mut encoder, plans)?;
@@ -13,6 +14,7 @@ pub fn save_plan_lookup(plans: &HashMap<u32, PlanDim>, path: &Path) -> Result<()
 }
 
 pub fn save_county_lookup(counties: &HashMap<String, CountyDim>, path: &Path) -> Result<()> {
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     let mut encoder = zstd::stream::Encoder::new(file, 3)?;
     bincode::serialize_into(&mut encoder, counties)?;
@@ -21,6 +23,7 @@ pub fn save_county_lookup(counties: &HashMap<String, CountyDim>, path: &Path) ->
 }
 
 pub fn save_series_cache(series: &HashMap<(u32, u32), PlanCountySeries>, path: &Path) -> Result<()> {
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     let mut encoder = zstd::stream::Encoder::new(file, 3)?;
     bincode::serialize_into(&mut encoder, series)?;

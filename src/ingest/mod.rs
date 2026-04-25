@@ -104,10 +104,14 @@ pub async fn ingest_month(month: YearMonth, force: bool, store_dir: &Path) -> Re
         let mut series_map: HashMap<(u32, u32), PlanCountySeries> = existing_series.into_iter()
             .map(|s| ((s.plan_key, s.county_key), s)).collect();
 
+        let mut month_accum: HashMap<(u32, u32), u32> = HashMap::new();
         for row in rows {
             let plan_key = resolver_inst.resolve_plan(&row, month);
             let county_key = resolver_inst.resolve_county(&row);
-            
+            *month_accum.entry((plan_key, county_key)).or_insert(0) += row.enrollment;
+        }
+
+        for ((plan_key, county_key), enrollment) in month_accum {
             let series = series_map.entry((plan_key, county_key)).or_insert_with(|| PlanCountySeries {
                 plan_key,
                 county_key,
@@ -115,7 +119,7 @@ pub async fn ingest_month(month: YearMonth, force: bool, store_dir: &Path) -> Re
                 presence_bitmap: 0,
                 enrollments: Vec::new(),
             });
-            series.add_month(month_yyyymm, row.enrollment);
+            series.add_month(month_yyyymm, enrollment);
         }
 
         let updated_series: Vec<_> = series_map.into_values().collect();

@@ -86,6 +86,7 @@ pub fn save_plan_dim(plans: &[PlanDim], path: &Path) -> Result<()> {
         ("is_current", Arc::new(is_currents) as ArrayRef),
     ])?;
 
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     let props = WriterProperties::builder().build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
@@ -132,6 +133,7 @@ pub fn save_county_dim(counties: &[CountyDim], path: &Path) -> Result<()> {
         ("county_name", Arc::new(county_names) as ArrayRef),
     ])?;
 
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     let props = WriterProperties::builder().build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
@@ -207,6 +209,7 @@ pub fn save_series_partition(series_list: &[PlanCountySeries], path: &Path) -> R
         ("enrollments", Arc::new(enrollments_list) as ArrayRef),
     ])?;
 
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     let props = WriterProperties::builder().build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;

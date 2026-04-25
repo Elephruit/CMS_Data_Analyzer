@@ -3,15 +3,21 @@ use axum::{
     Router,
     Json,
     extract::State,
+    response::{IntoResponse, Response},
+    http::{header, StatusCode, Uri},
 };
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::query::read_api::QueryEngine;
 use crate::model::PlanCountySeries;
+
+#[derive(RustEmbed)]
+#[folder = "frontend/dist/"]
+struct Asset;
 
 type EngineState = Arc<RwLock<QueryEngine>>;
 
@@ -37,8 +43,8 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/data/ingest", axum::routing::post(trigger_ingest))
         .route("/api/data/delete-month", axum::routing::post(delete_month))
         .route("/api/data/delete-year", axum::routing::post(delete_year))
-        // Serve frontend static files
-        .fallback_service(ServeDir::new("frontend/dist"))
+        // Serve frontend static files from embedded assets
+        .fallback(static_handler)
         .layer(CorsLayer::permissive())
         .with_state(engine);
 
@@ -46,6 +52,35 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+
+    if path.is_empty() || path == "index.html" {
+        return serve_asset("index.html");
+    }
+
+    match Asset::get(path) {
+        Some(_) => serve_asset(path),
+        None => {
+            // If the path doesn't exist, serve index.html (for SPA routing)
+            serve_asset("index.html")
+        }
+    }
+}
+
+fn serve_asset(path: &str) -> Response {
+    match Asset::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            Response::builder()
+                .header(header::CONTENT_TYPE, mime.as_ref())
+                .body(axum::body::Body::from(content.data))
+                .unwrap()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 fn rebuild_and_reload(store_dir: &Path) -> anyhow::Result<QueryEngine> {

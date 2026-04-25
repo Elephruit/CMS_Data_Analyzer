@@ -13,6 +13,7 @@ pub fn load_manifest(path: &Path) -> Result<StoreManifest> {
 }
 
 pub fn save_manifest(manifest: &StoreManifest, path: &Path) -> Result<()> {
+    crate::util::io::ensure_parent_dir(path)?;
     let file = File::create(path)?;
     serde_json::to_writer_pretty(file, manifest)?;
     Ok(())

@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 #[command(about = "CMS Monthly Enrollment Hyper-Efficient Store", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
