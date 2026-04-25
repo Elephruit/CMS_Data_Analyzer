@@ -10,6 +10,46 @@ pub struct PlanCountySeries {
 }
 
 impl PlanCountySeries {
+    pub fn set_month(&mut self, month_yyyymm: u32, enrollment: u32) {
+        if self.start_month_key == 0 {
+            self.start_month_key = month_yyyymm;
+            self.presence_bitmap = 1;
+            self.enrollments = vec![enrollment];
+            return;
+        }
+
+        let start_year = (self.start_month_key / 100) as i32;
+        let start_month = (self.start_month_key % 100) as i32;
+        let curr_year = (month_yyyymm / 100) as i32;
+        let curr_month = (month_yyyymm % 100) as i32;
+        
+        let month_diff = (curr_year - start_year) * 12 + (curr_month - start_month);
+
+        if month_diff < 0 {
+            let shift = (-month_diff) as u32;
+            if shift >= 64 { return; }
+            self.presence_bitmap <<= shift;
+            self.start_month_key = month_yyyymm;
+            self.enrollments.insert(0, enrollment);
+            self.presence_bitmap |= 1;
+        } else {
+            let month_index = month_diff as u32;
+            if month_index >= 64 { return; }
+
+            let mask = 1u64 << month_index;
+            if self.presence_bitmap & mask != 0 {
+                // Month already exists, OVERWRITE
+                let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+                self.enrollments[pos] = enrollment;
+            } else {
+                // New month, insert it
+                let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
+                self.enrollments.insert(pos, enrollment);
+                self.presence_bitmap |= mask;
+            }
+        }
+    }
+
     pub fn add_month(&mut self, month_yyyymm: u32, enrollment: u32) {
         if self.start_month_key == 0 {
             self.start_month_key = month_yyyymm;
@@ -48,9 +88,9 @@ impl PlanCountySeries {
 
             let mask = 1u64 << month_index;
             if self.presence_bitmap & mask != 0 {
-                // Month already exists, update it
+                // Month already exists, sum the enrollment
                 let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;
-                self.enrollments[pos] = enrollment;
+                self.enrollments[pos] += enrollment;
             } else {
                 // New month, insert it
                 let pos = (self.presence_bitmap & (mask - 1)).count_ones() as usize;

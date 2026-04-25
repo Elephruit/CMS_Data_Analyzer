@@ -74,10 +74,10 @@ export const EnrollmentExplorer: React.FC = () => {
   }, [grain, filters]);
 
   const filteredAndSortedRows = useMemo(() => {
-    if (!data) return [];
+    if (!data || !Array.isArray(data.rows)) return [];
     
     let rows = data.rows.filter(row => 
-      row.name.toLowerCase().includes(searchTerm.toLowerCase())
+      (row?.name || "").toLowerCase().includes((searchTerm || "").toLowerCase())
     );
 
     rows.sort((a, b) => {
@@ -88,8 +88,8 @@ export const EnrollmentExplorer: React.FC = () => {
         return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
       }
       
-      const aStr = String(aVal).toLowerCase();
-      const bStr = String(bVal).toLowerCase();
+      const aStr = String(aVal || "").toLowerCase();
+      const bStr = String(bVal || "").toLowerCase();
       return sortConfig.direction === 'asc' 
         ? aStr.localeCompare(bStr) 
         : bStr.localeCompare(aStr);

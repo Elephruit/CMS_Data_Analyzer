@@ -80,192 +80,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Some(Commands::RepairDim) => {
-            log::info!("Repairing plan dimension: deduplicating per-month plan versions...");
-
-            let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
-            let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
-            let total_before = plans.len();
-
-            let mut canonical: std::collections::HashMap<(String, u32), u32> = std::collections::HashMap::new();
-            for p in &plans {
-                let nk = format!("{}|{}", p.contract_id, p.plan_id);
-                let entry = canonical.entry((nk, p.valid_from_month)).or_insert(p.plan_key);
-                if p.plan_key < *entry {
-                    *entry = p.plan_key;
-                }
-            }
-
-            let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            for p in &plans {
-                let nk = format!("{}|{}", p.contract_id, p.plan_id);
-                let canon = canonical[&(nk, p.valid_from_month)];
-                if p.plan_key != canon {
-                    remap.insert(p.plan_key, canon);
-                }
-            }
-
-            println!("Plans before repair: {}", total_before);
-            println!("Duplicate plan_keys to remove: {}", remap.len());
-
-            if remap.is_empty() {
-                println!("No duplicates found. Plan dimension is clean.");
-            } else {
-                let clean_plans: Vec<_> = plans.into_iter().filter(|p| !remap.contains_key(&p.plan_key)).collect();
-                storage::parquet_store::save_plan_dim(&clean_plans, &plan_dim_path)?;
-                println!("Plans after repair: {}", clean_plans.len());
-
-                let facts_dir = store_dir.join("facts");
-                let mut files_updated = 0usize;
-                if facts_dir.exists() {
-                    for year_entry in std::fs::read_dir(&facts_dir)? {
-                        let year_path = year_entry?.path();
-                        if !year_path.is_dir() { continue; }
-                        for state_entry in std::fs::read_dir(&year_path)? {
-                            let state_path = state_entry?.path();
-                            if !state_path.is_dir() { continue; }
-                            let series_path = state_path.join("plan_county_series.parquet");
-                            let mut series_list = storage::parquet_store::load_series_partition(&series_path)?;
-                            let mut changed = false;
-                            let mut merged: std::collections::HashMap<(u32, u32), crate::model::PlanCountySeries> = std::collections::HashMap::new();
-                            for mut s in series_list.drain(..) {
-                                if let Some(&canon_key) = remap.get(&s.plan_key) {
-                                    s.plan_key = canon_key;
-                                    changed = true;
-                                }
-                                let key = (s.plan_key, s.county_key);
-                                if let Some(existing) = merged.get_mut(&key) {
-                                    let bitmap = s.presence_bitmap;
-                                    let start_year = (s.start_month_key / 100) as i32;
-                                    let start_month = (s.start_month_key % 100) as i32;
-                                    let mut pos = 0usize;
-                                    for i in 0..64u32 {
-                                        if (bitmap >> i) & 1 != 0 {
-                                            let curr = start_month - 1 + i as i32;
-                                            let year = start_year + curr / 12;
-                                            let month = curr % 12 + 1;
-                                            let yyyymm = (year as u32) * 100 + month as u32;
-                                            if let Some(&enrollment) = s.enrollments.get(pos) {
-                                                existing.add_month(yyyymm, enrollment);
-                                            }
-                                            pos += 1;
-                                        }
-                                    }
-                                } else {
-                                    merged.insert(key, s);
-                                }
-                            }
-                            if changed {
-                                let updated: Vec<_> = merged.into_values().collect();
-                                storage::parquet_store::save_series_partition(&updated, &series_path)?;
-                                files_updated += 1;
-                            }
-                        }
-                    }
-                }
-                println!("Series partition files updated: {}", files_updated);
-                println!("Repair complete. Run rebuild-cache to refresh the query cache.");
-            }
-
-            {
-                let plans_v2 = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
-                let invalid_count = plans_v2.iter().filter(|p| {
-                    p.valid_to_month.map_or(false, |vt| vt < p.valid_from_month)
-                }).count();
-                println!("Plans with invalid validity windows: {}", invalid_count);
-
-                if invalid_count > 0 {
-                    let mut by_natural_key: std::collections::HashMap<String, Vec<model::PlanDim>> =
-                        std::collections::HashMap::new();
-                    for p in plans_v2 {
-                        let nk = format!("{}|{}", p.contract_id, p.plan_id);
-                        by_natural_key.entry(nk).or_default().push(p);
-                    }
-
-                    let mut fixed_plans: Vec<model::PlanDim> = Vec::new();
-                    for (_, mut versions) in by_natural_key {
-                        versions.sort_by_key(|p| p.valid_from_month);
-                        let n = versions.len();
-                        for i in 0..n {
-                            versions[i].valid_to_month = if i < n - 1 {
-                                Some(versions[i + 1].valid_from_month)
-                            } else {
-                                None
-                            };
-                            versions[i].is_current = i == n - 1;
-                        }
-                        fixed_plans.extend(versions);
-                    }
-
-                    let fixed_total = fixed_plans.len();
-                    storage::parquet_store::save_plan_dim(&fixed_plans, &plan_dim_path)?;
-                    println!("Validity chain rebuilt for {} plans. Run rebuild-cache to refresh.", fixed_total);
-                } else {
-                    println!("No invalid validity windows found.");
-                }
-            }
+            storage::maintenance::repair_dimension(store_dir)?;
+            storage::maintenance::rebuild_cache(store_dir)?;
         }
         Some(Commands::RebuildCache) => {
-            log::info!("Rebuilding cache");
-            let cache_dir = store_dir.join("cache");
-            std::fs::create_dir_all(&cache_dir)?;
-
-            let plan_dim_path = store_dir.join("dims").join("plan_dim.parquet");
-            let plans = storage::parquet_store::load_plan_dim(&plan_dim_path)?;
-            let plan_map: std::collections::HashMap<u32, model::PlanDim> = plans.into_iter().map(|p| (p.plan_key, p)).collect();
-            storage::binary_cache::save_plan_lookup(&plan_map, &cache_dir.join("plan_lookup.bin"))?;
-            log::info!("Cached {} plans", plan_map.len());
-
-            let county_dim_path = store_dir.join("dims").join("county_dim.parquet");
-            let counties = storage::parquet_store::load_county_dim(&county_dim_path)?;
-            let county_map: std::collections::HashMap<String, model::CountyDim> = counties.into_iter().map(|c| (format!("{}|{}", c.state_code, c.county_name), c)).collect();
-            storage::binary_cache::save_county_lookup(&county_map, &cache_dir.join("county_lookup.bin"))?;
-            log::info!("Cached {} counties", county_map.len());
-
-            let facts_dir = store_dir.join("facts");
-            let mut all_series: std::collections::HashMap<(u32, u32), model::PlanCountySeries> = std::collections::HashMap::new();
-            if facts_dir.exists() {
-                let mut year_paths: Vec<_> = std::fs::read_dir(&facts_dir)?
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.is_dir())
-                    .collect();
-                year_paths.sort();
-                for year_path in year_paths {
-                    let mut state_paths: Vec<_> = std::fs::read_dir(&year_path)?
-                        .filter_map(|e| e.ok().map(|e| e.path()))
-                        .filter(|p| p.is_dir())
-                        .collect();
-                    state_paths.sort();
-                    for state_path in state_paths {
-                        let series_path = state_path.join("plan_county_series.parquet");
-                        let series_list = storage::parquet_store::load_series_partition(&series_path)?;
-                        for new_s in series_list {
-                            let key = (new_s.plan_key, new_s.county_key);
-                            if let Some(existing) = all_series.get_mut(&key) {
-                                let bitmap = new_s.presence_bitmap;
-                                let start_year = (new_s.start_month_key / 100) as i32;
-                                let start_month = (new_s.start_month_key % 100) as i32;
-                                let mut pos = 0usize;
-                                for i in 0..64u32 {
-                                    if (bitmap >> i) & 1 != 0 {
-                                        let curr = start_month - 1 + i as i32;
-                                        let year = start_year + curr / 12;
-                                        let month = curr % 12 + 1;
-                                        let yyyymm = (year as u32) * 100 + month as u32;
-                                        if let Some(&enrollment) = new_s.enrollments.get(pos) {
-                                            existing.add_month(yyyymm, enrollment);
-                                        }
-                                        pos += 1;
-                                    }
-                                }
-                            } else {
-                                all_series.insert(key, new_s);
-                            }
-                        }
-                    }
-                }
-            }
-            storage::binary_cache::save_series_cache(&all_series, &cache_dir.join("series_values.bin"))?;
-            log::info!("Cached {} series", all_series.len());
+            storage::maintenance::rebuild_cache(store_dir)?;
         }
         Some(Commands::Serve { port }) => {
             log::info!("Starting server on port {}", port);
@@ -347,18 +166,40 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         serde_json::json!({})
                     };
-                    let movers = engine.get_top_movers(&filters_json, start_month, end_month, limit)?;
-                    println!("Top {} movers from {} to {} {}:", limit, from, to, state.clone().unwrap_or_else(|| "Nationwide".to_string()));
+                    let movers_json = engine.get_top_movers(&filters_json, start_month, end_month, limit)?;
+                    println!("Top movers from {} to {} {}:", from, to, state.clone().unwrap_or_else(|| "Nationwide".to_string()));
+                    
+                    println!("\nTOP INCREASES:");
                     println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Change");
                     println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");
-                    for (cid, pid, name, change, _prior) in &movers {
-                        println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, change);
+                    if let Some(increases) = movers_json["increases"].as_array() {
+                        for item in increases {
+                            let cid = item[0].as_str().unwrap_or("");
+                            let pid = item[1].as_str().unwrap_or("");
+                            let name = item[2].as_str().unwrap_or("");
+                            let change = item[3].as_i64().unwrap_or(0);
+                            println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, change);
+                        }
                     }
+
+                    println!("\nTOP DECREASES:");
+                    println!("{:<10} {:<10} {:<40} {:<10}", "Contract", "Plan", "Name", "Change");
+                    println!("{:-<10} {:-<10} {:-<40} {:-<10}", "", "", "", "");
+                    if let Some(decreases) = movers_json["decreases"].as_array() {
+                        for item in decreases {
+                            let cid = item[0].as_str().unwrap_or("");
+                            let pid = item[1].as_str().unwrap_or("");
+                            let name = item[2].as_str().unwrap_or("");
+                            let change = item[3].as_i64().unwrap_or(0);
+                            println!("{:<10} {:<10} {:<40} {:<10}", cid, pid, name, change);
+                        }
+                    }
+
                     results_json = serde_json::json!({
                         "state": state,
                         "from": from,
                         "to": to,
-                        "movers": movers
+                        "movers": movers_json
                     });
                 }
             }

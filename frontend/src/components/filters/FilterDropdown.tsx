@@ -44,9 +44,12 @@ export const FilterDropdown: React.FC<FilterDropdownProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const filteredOptions = useMemo(() => options.filter((option) =>
-    option.label.toLowerCase().includes(searchQuery.toLowerCase())
-  ), [options, searchQuery]);
+  const filteredOptions = useMemo(() => {
+    if (!Array.isArray(options)) return [];
+    return options.filter((option) =>
+      (option?.label || "").toLowerCase().includes((searchQuery || "").toLowerCase())
+    );
+  }, [options, searchQuery]);
 
   const toggleOption = (value: string) => {
     const newValues = selectedValues.includes(value)

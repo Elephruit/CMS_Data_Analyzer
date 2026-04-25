@@ -43,6 +43,8 @@ pub async fn start_server(port: u16, store_dir: &Path) -> anyhow::Result<()> {
         .route("/api/data/ingest", axum::routing::post(trigger_ingest))
         .route("/api/data/delete-month", axum::routing::post(delete_month))
         .route("/api/data/delete-year", axum::routing::post(delete_year))
+        .route("/api/data/repair-dim", axum::routing::post(trigger_repair))
+        .route("/api/data/rebuild-cache", axum::routing::post(trigger_rebuild_cache))
         // Serve frontend static files from embedded assets
         .fallback(static_handler)
         .layer(CorsLayer::permissive())
@@ -131,9 +133,9 @@ fn rebuild_and_reload(store_dir: &Path) -> anyhow::Result<QueryEngine> {
                         let mut pos = 0usize;
                         for i in 0..64u32 {
                             if (bitmap >> i) & 1 != 0 {
-                                let curr = start_month - 1 + i as i32;
-                                let year = start_year + curr / 12;
-                                let month = curr % 12 + 1;
+                                let curr_months = (start_month - 1) + i as i32;
+                                let year = start_year + (curr_months / 12);
+                                let month = (curr_months % 12) + 1;
                                 let yyyymm = (year as u32) * 100 + month as u32;
                                 if let Some(&enrollment) = new_s.enrollments.get(pos) {
                                     existing.add_month(yyyymm, enrollment);
@@ -141,6 +143,7 @@ fn rebuild_and_reload(store_dir: &Path) -> anyhow::Result<QueryEngine> {
                                 pos += 1;
                             }
                         }
+
                     } else {
                         all_series.insert(key, new_s);
                     }
@@ -167,7 +170,7 @@ async fn get_status() -> Json<Value> {
 async fn get_filter_options(State(engine): State<EngineState>, Json(payload): Json<Value>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let engine = engine.read().await;
     let start = std::time::Instant::now();
-    let res = match engine.get_filter_options(&payload) {
+    let res = match (&*engine).get_filter_options(&payload) {
         Ok(options) => Ok(Json(options)),
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
@@ -207,7 +210,7 @@ async fn get_top_movers(State(engine): State<EngineState>, Json(payload): Json<V
     let to: crate::model::YearMonth = to_str.parse().map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid to month".to_string()))?;
     let limit = payload["limit"].as_u64().unwrap_or(10) as usize;
 
-    let res = match engine.get_top_movers(&payload, from, to, limit) {
+    let res = match (&*engine).get_top_movers(&payload, from, to, limit) {
         Ok(movers) => Ok(Json(json!(movers))),
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
@@ -371,4 +374,35 @@ async fn delete_year(State(engine): State<EngineState>, Json(payload): Json<Valu
     }
 
     Ok(Json(json!({ "status": "deleted", "year": year })))
+}
+
+async fn trigger_repair(State(engine): State<EngineState>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    match crate::storage::maintenance::repair_dimension(store_dir) {
+        Ok(_) => {
+            match rebuild_and_reload(store_dir) {
+                Ok(new_engine) => {
+                    *engine.write().await = new_engine;
+                    log::info!("Engine reloaded after dimension repair");
+                }
+                Err(e) => {
+                    log::error!("Cache rebuild failed after repair: {}", e);
+                }
+            }
+            Ok(Json(json!({ "status": "success", "message": "Dimension repair complete" })))
+        },
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn trigger_rebuild_cache(State(engine): State<EngineState>) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let store_dir = Path::new("store");
+    match rebuild_and_reload(store_dir) {
+        Ok(new_engine) => {
+            *engine.write().await = new_engine;
+            log::info!("Engine reloaded after manual cache rebuild");
+            Ok(Json(json!({ "status": "success", "message": "Cache rebuild complete" })))
+        }
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 }

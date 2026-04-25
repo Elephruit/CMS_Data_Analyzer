@@ -119,7 +119,7 @@ pub async fn ingest_month(month: YearMonth, force: bool, store_dir: &Path) -> Re
                 presence_bitmap: 0,
                 enrollments: Vec::new(),
             });
-            series.add_month(month_yyyymm, enrollment);
+            series.set_month(month_yyyymm, enrollment);
         }
 
         let updated_series: Vec<_> = series_map.into_values().collect();

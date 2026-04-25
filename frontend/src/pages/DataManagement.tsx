@@ -25,6 +25,8 @@ const MONTH_NAMES = [
 export const DataManagement: React.FC = () => {
   const { availableMonths: ingestedMonths, refreshAvailableMonths } = useFilters();
   const [loading, setLoading] = useState(false);
+  const [isRepairing, setIsRepairing] = useState(false);
+  const [isRebuilding, setIsRebuilding] = useState(false);
   const [processing, setProcessing] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   
@@ -102,22 +104,67 @@ export const DataManagement: React.FC = () => {
     }
   };
 
+  const handleMaintenance = async (action: 'repair' | 'rebuild') => {
+    if (action === 'repair') setIsRepairing(true);
+    else setIsRebuilding(true);
+
+    try {
+      const endpoint = action === 'repair' ? 'repair-dim' : 'rebuild-cache';
+      const response = await fetch(`http://127.0.0.1:3000/api/data/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (response.ok) {
+        await refreshAvailableMonths();
+        alert(`${action === 'repair' ? 'Repair' : 'Cache rebuild'} complete!`);
+      } else {
+        const err = await response.text();
+        alert(`Maintenance failed: ${err}`);
+      }
+    } catch (e) {
+      alert(`Connection error: ${e}`);
+    } finally {
+      if (action === 'repair') setIsRepairing(false);
+      else setIsRebuilding(false);
+    }
+  };
+
   return (
     <div className="max-w-[1400px] mx-auto space-y-10 pb-24 px-4">
       <PageHeader 
         title="Analytical Store Management" 
         subtitle="Manage and provision enrollment data for multi-year analysis. Keep your local store updated with the latest CMS releases."
         action={
-          <button 
-            onClick={() => {
-              setLoading(true);
-              refreshAvailableMonths().finally(() => setLoading(false));
-            }}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs font-bold text-slate-300 transition-all"
-          >
-            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-            REFRESH STATUS
-          </button>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => handleMaintenance('repair')}
+              disabled={isRepairing}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-amber-500/10 rounded-lg border border-slate-700 hover:border-amber-500/50 text-xs font-bold text-slate-300 hover:text-amber-500 transition-all disabled:opacity-30"
+            >
+              <RefreshCw className={cn("w-4 h-4", isRepairing && "animate-spin")} />
+              REPAIR DIMENSIONS
+            </button>
+            <button 
+              onClick={() => handleMaintenance('rebuild')}
+              disabled={isRebuilding}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-sky-500/10 rounded-lg border border-slate-700 hover:border-sky-500/50 text-xs font-bold text-slate-300 hover:text-sky-500 transition-all disabled:opacity-30"
+            >
+              <RefreshCw className={cn("w-4 h-4", isRebuilding && "animate-spin")} />
+              REBUILD CACHE
+            </button>
+            <div className="w-px h-6 bg-slate-800 mx-1" />
+            <button 
+              onClick={() => {
+                setLoading(true);
+                refreshAvailableMonths().finally(() => setLoading(false));
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs font-bold text-slate-300 transition-all"
+            >
+              <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+              REFRESH STATUS
+            </button>
+          </div>
         }
       />
 
