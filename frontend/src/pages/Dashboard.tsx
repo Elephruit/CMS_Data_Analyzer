@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useFilters } from '../context/FilterContext';
 import { Card, PageHeader, StatCard } from '../components/ui/Primitives';
 import { 
@@ -54,29 +54,33 @@ interface MoversResponse {
 }
 
 export const Dashboard: React.FC = () => {
-  const { filters } = useFilters();
+  const { filters, availableMonths } = useFilters();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [movers, setMovers] = useState<MoversResponse>({ increases: [], decreases: [] });
-  const [loading, setLoading] = useState(true);
-  const [availableMonths, setAvailableMonths] = useState<string[]>([]);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [moversLoading, setMoversLoading] = useState(true);
+  const availableMonthValues = useMemo(
+    () => availableMonths.map((m) => `${m.year}-${m.month.toString().padStart(2, '0')}`),
+    [availableMonths]
+  );
 
   // Find the most appropriate comparison December
   const comparisonMonth = (() => {
-    if (availableMonths.length === 0) return null;
+    if (availableMonthValues.length === 0 || !filters.analysisMonth) return null;
     
     const analysisYear = parseInt(filters.analysisMonth.split('-')[0]);
     const analysisMonth = parseInt(filters.analysisMonth.split('-')[1]);
     
     // Ideal comparison is Dec of previous year
     const ideal = `${analysisYear - 1}-12`;
-    if (availableMonths.includes(ideal)) return ideal;
+    if (availableMonthValues.includes(ideal)) return ideal;
     
     // Otherwise, find the LATEST December that is EARLIER than analysis month
-    const decs = availableMonths
+    const decs = availableMonthValues
       .filter(m => m.endsWith('-12'))
       .filter(m => {
-        const [y, _] = m.split('-').map(Number);
+        const [y] = m.split('-').map(Number);
         return y < analysisYear || (y === analysisYear && 12 < analysisMonth);
       })
       .sort()
@@ -86,32 +90,22 @@ export const Dashboard: React.FC = () => {
   })();
 
   useEffect(() => {
-    const fetchAvailable = async () => {
-      try {
-        const res = await fetch('http://127.0.0.1:3000/api/data/months');
-        const months = await res.json();
-        // Convert {year, month} to YYYY-MM
-        const formatted = months.map((m: any) => `${m.year}-${m.month.toString().padStart(2, '0')}`);
-        setAvailableMonths(formatted);
-      } catch (e) {
-        console.error('Failed to fetch available months:', e);
-      }
-    };
-    fetchAvailable();
-  }, []);
+    let cancelled = false;
 
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
+    const mapMovers = (list: [string, string, string, number, number | null | undefined][]) => list.map(([cid, pid, name, change, prior]) => ({
+      contract_id: cid,
+      plan_id: pid,
+      plan_name: name,
+      change,
+      prior: prior ?? 0,
+    }));
+
+    const fetchSecondaryData = async () => {
+      if (!filters.analysisMonth || cancelled) return;
+      setMoversLoading(true);
       try {
         const moversFrom = comparisonMonth || `${parseInt(filters.analysisMonth.split('-')[0]) - 1}-12`;
-        
-        const [summaryRes, trendRes, moversRes] = await Promise.all([
-          fetch('http://127.0.0.1:3000/api/query/dashboard-summary', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(filters),
-          }),
+        const [trendRes, moversRes] = await Promise.all([
           fetch('http://127.0.0.1:3000/api/query/global-trend', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -129,36 +123,54 @@ export const Dashboard: React.FC = () => {
           })
         ]);
 
-        const summaryData = await summaryRes.json();
         const trendDataRaw = await trendRes.json();
         const moversDataRaw = await moversRes.json();
+        if (cancelled) return;
 
-        setSummary(summaryData);
         setTrend(trendDataRaw.map(([m, val]: [number, number]) => ({
           month: m.toString().replace(/(\d{4})(\d{2})/, '$1-$2'),
           enrollment: val
         })));
-        
-        const mapMovers = (list: any[]) => list.map(([cid, pid, name, change, prior]: any) => ({
-          contract_id: cid,
-          plan_id: pid,
-          plan_name: name,
-          change,
-          prior: prior ?? 0,
-        }));
 
         setMovers({
           increases: mapMovers(moversDataRaw.increases || []),
           decreases: mapMovers(moversDataRaw.decreases || [])
         });
       } catch (error) {
-        console.error('Failed to fetch dashboard data:', error);
+        if (!cancelled) console.error('Failed to fetch dashboard secondary data:', error);
       } finally {
-        setLoading(false);
+        if (!cancelled) setMoversLoading(false);
       }
     };
 
-    fetchData();
+    const fetchSummary = async () => {
+      if (!filters.analysisMonth) return;
+      setSummaryLoading(true);
+      setMoversLoading(true);
+      try {
+        const summaryRes = await fetch('http://127.0.0.1:3000/api/query/dashboard-summary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(filters),
+        });
+        const summaryData = await summaryRes.json();
+        if (cancelled) return;
+        setSummary(summaryData);
+      } catch (error) {
+        if (!cancelled) console.error('Failed to fetch dashboard summary:', error);
+      } finally {
+        if (!cancelled) {
+          setSummaryLoading(false);
+          void fetchSecondaryData();
+        }
+      }
+    };
+
+    fetchSummary();
+
+    return () => {
+      cancelled = true;
+    };
   }, [filters, comparisonMonth]);
 
   const calculateEnrollmentChange = () => {
@@ -218,7 +230,7 @@ export const Dashboard: React.FC = () => {
           change={calculateEnrollmentChange() || undefined}
           changeType={(summary?.totalEnrollment || 0) >= (summary?.priorEnrollment || 0) ? 'positive' : 'negative'}
           icon={LayoutDashboard}
-          loading={loading}
+          loading={summaryLoading}
         />
         <StatCard 
           label="Parent Organizations" 
@@ -226,19 +238,19 @@ export const Dashboard: React.FC = () => {
           change={summary && summary.orgChange !== 0 ? `${summary.orgChange >= 0 ? '+' : ''}${summary.orgChange} YoY` : undefined}
           changeType={summary && summary.orgChange >= 0 ? 'positive' : 'negative'}
           icon={Building2}
-          loading={loading}
+          loading={summaryLoading}
         />
         <StatCard 
           label="Total Plans" 
           value={summary ? summary.planCount.toLocaleString() : '0'} 
           icon={Users}
-          loading={loading}
+          loading={summaryLoading}
         />
         <StatCard 
           label="Counties" 
           value={summary ? summary.countyCount.toLocaleString() : '0'} 
           icon={MapPin}
-          loading={loading}
+          loading={summaryLoading}
         />
       </div>
       
@@ -278,7 +290,7 @@ export const Dashboard: React.FC = () => {
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px', fontWeight: 'bold' }}
                   labelStyle={{ color: '#94a3b8', fontSize: '10px', marginBottom: '4px', textTransform: 'uppercase', fontWeight: 'black', letterSpacing: '0.1em' }}
                   labelFormatter={(val) => formatMonthYear(val)}
-                  formatter={(val: any) => [val !== undefined ? formatFullEnrollment(val) : '0', 'Enrollment']}
+                  formatter={(val: unknown) => [val !== undefined ? formatFullEnrollment(Number(val)) : '0', 'Enrollment']}
                 />
                 <Area 
                   type="monotone" 
@@ -301,7 +313,9 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
           <div className="flex-1 space-y-10">
-            {movers.increases.length === 0 && movers.decreases.length === 0 ? (
+            {moversLoading ? (
+              <div className="h-full flex items-center justify-center text-slate-600 text-sm italic">Loading movers...</div>
+            ) : movers.increases.length === 0 && movers.decreases.length === 0 ? (
               <div className="h-full flex items-center justify-center text-slate-600 text-sm italic">No movers detected in range.</div>
             ) : (
               <>
@@ -320,28 +334,28 @@ export const Dashboard: React.FC = () => {
           label="EGWP" 
           value={summary ? formatEnrollment(summary.breakdowns?.egwp || 0) : '0'} 
           icon={Briefcase}
-          loading={loading}
+          loading={summaryLoading}
         />
         <StatCard 
           label="EGWP PDP" 
           value={summary ? formatEnrollment(summary.breakdowns?.egwp_pdp || 0) : '0'} 
           icon={Pill}
-          loading={loading}
+          loading={summaryLoading}
         />
         <StatCard 
           label="Indiv Non-SNP" 
           value={summary ? formatEnrollment(summary.breakdowns?.individual_non_snp || 0) : '0'} 
           icon={UserCheck}
-          loading={loading}
+          loading={summaryLoading}
         />
         <StatCard 
           label="Indiv PDP" 
           value={summary ? formatEnrollment(summary.breakdowns?.pdp || 0) : '0'} 
           icon={ShieldCheck}
-          loading={loading}
+          loading={summaryLoading}
         />
         <Card className="relative group hover:border-slate-700 transition-all duration-300 min-h-[120px]">
-          {loading && (
+          {summaryLoading && (
             <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-2xl">
               <div className="w-4 h-4 border-2 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
             </div>

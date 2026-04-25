@@ -1,4 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect, type ReactNode } from 'react';
+
+export interface AvailableMonth {
+  year: number;
+  month: number;
+}
 
 export interface FilterState {
   analysisMonth: string; // YYYY-MM
@@ -19,13 +24,13 @@ interface FilterContextType {
   setFilters: React.Dispatch<React.SetStateAction<FilterState>>;
   resetFilters: () => void;
   updateFilter: <K extends keyof FilterState>(key: K, value: FilterState[K]) => void;
-  availableMonths: any[];
+  availableMonths: AvailableMonth[];
   refreshAvailableMonths: () => Promise<void>;
 }
 
 const defaultFilters: FilterState = {
-  analysisMonth: '2025-02',
-  dateRange: ['2025-01', '2025-02'],
+  analysisMonth: '',
+  dateRange: ['', ''],
   states: [],
   counties: [],
   parentOrgs: [],
@@ -41,32 +46,55 @@ const FilterContext = createContext<FilterContextType | undefined>(undefined);
 
 export const FilterProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
-  const [availableMonths, setAvailableMonths] = useState<any[]>([]);
+  const [availableMonths, setAvailableMonths] = useState<AvailableMonth[]>([]);
 
-  const refreshAvailableMonths = async () => {
+  const refreshAvailableMonths = useCallback(async () => {
     try {
       const res = await fetch('http://127.0.0.1:3000/api/data/months');
-      const data = await res.json();
+      const data = await res.json() as AvailableMonth[];
       setAvailableMonths(data);
       
-      // If no analysis month set, set to latest
-      if (data.length > 0 && !filters.analysisMonth) {
-        const latest = data[data.length - 1];
-        setFilters(prev => ({ 
-          ...prev, 
-          analysisMonth: `${latest.year}-${latest.month.toString().padStart(2, '0')}` 
-        }));
-      }
+      setFilters(prev => {
+        if (prev.analysisMonth || data.length === 0) return prev;
+
+        const sorted = [...data].sort((a, b) => (a.year * 100 + a.month) - (b.year * 100 + b.month));
+        const latest = sorted[sorted.length - 1];
+        const prior = sorted[sorted.length - 2] ?? latest;
+
+        return {
+          ...prev,
+          analysisMonth: `${latest.year}-${latest.month.toString().padStart(2, '0')}`,
+          dateRange: [
+            `${prior.year}-${prior.month.toString().padStart(2, '0')}`,
+            `${latest.year}-${latest.month.toString().padStart(2, '0')}`,
+          ],
+        };
+      });
     } catch (e) {
       console.error(e);
     }
-  };
-
-  useEffect(() => {
-    refreshAvailableMonths();
   }, []);
 
-  const resetFilters = () => setFilters(defaultFilters);
+  useEffect(() => {
+    void Promise.resolve().then(refreshAvailableMonths);
+  }, [refreshAvailableMonths]);
+
+  const resetFilters = () => {
+    const sorted = [...availableMonths].sort((a, b) => (a.year * 100 + a.month) - (b.year * 100 + b.month));
+    const latest = sorted[sorted.length - 1];
+    const prior = sorted[sorted.length - 2] ?? latest;
+
+    setFilters({
+      ...defaultFilters,
+      analysisMonth: latest ? `${latest.year}-${latest.month.toString().padStart(2, '0')}` : '',
+      dateRange: latest && prior
+        ? [
+            `${prior.year}-${prior.month.toString().padStart(2, '0')}`,
+            `${latest.year}-${latest.month.toString().padStart(2, '0')}`,
+          ]
+        : ['', ''],
+    });
+  };
 
   const updateFilter = <K extends keyof FilterState>(key: K, value: FilterState[K]) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -79,6 +107,7 @@ export const FilterProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useFilters = () => {
   const context = useContext(FilterContext);
   if (context === undefined) {

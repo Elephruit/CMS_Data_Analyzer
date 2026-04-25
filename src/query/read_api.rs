@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::{HashMap, HashSet, BTreeSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use crate::model::{PlanDim, YearMonth, PlanCountySeries, CountyDim};
 use crate::storage;
@@ -33,8 +33,7 @@ impl QueryEngine {
         }
 
         let mut county_lookup = None;
-        let mut latest_yyyymm = 0;
-        let mut prior_yyyymm = 0;
+        let (latest_yyyymm, prior_yyyymm) = Self::load_default_months(store_dir);
 
         if let Some(raw) = county_lookup_raw {
             let mut optimized = HashMap::new();
@@ -42,26 +41,6 @@ impl QueryEngine {
                 optimized.insert(c.county_key, c);
             }
             county_lookup = Some(optimized);
-        }
-
-        if let Some(cache) = &series_cache {
-            let mut all_months = BTreeSet::new();
-            for series in cache.values() {
-                let start_year = (series.start_month_key / 100) as i32;
-                let start_month = (series.start_month_key % 100) as i32;
-                for i in 0..64 {
-                    if (series.presence_bitmap >> i) & 1 != 0 {
-                        let curr_month_total = (start_month - 1) + i as i32;
-                        let year = start_year + (curr_month_total / 12);
-                        let month = (curr_month_total % 12) + 1;
-                        let yyyymm = (year as u32 * 100) + month as u32;
-                        all_months.insert(yyyymm);
-                    }
-                }
-            }
-            let months_vec: Vec<_> = all_months.into_iter().collect();
-            latest_yyyymm = *months_vec.last().unwrap_or(&0);
-            prior_yyyymm = if months_vec.len() >= 2 { months_vec[months_vec.len() - 2] } else { 0 };
         }
 
         Self {
@@ -72,6 +51,26 @@ impl QueryEngine {
             latest_yyyymm,
             prior_yyyymm,
         }
+    }
+
+    fn load_default_months(store_dir: &Path) -> (u32, u32) {
+        let manifest_path = store_dir.join("manifests").join("months.json");
+        let mut months = storage::manifests::load_manifest(&manifest_path)
+            .map(|manifest| {
+                manifest
+                    .ingested_months
+                    .into_iter()
+                    .map(|m| m.to_yyyymm())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        months.sort_unstable();
+        months.dedup();
+
+        let latest = *months.last().unwrap_or(&0);
+        let prior = if months.len() >= 2 { months[months.len() - 2] } else { 0 };
+        (latest, prior)
     }
 
     fn get_analysis_months(&self, filters: &serde_json::Value) -> (u32, u32) {
@@ -221,7 +220,7 @@ impl QueryEngine {
         let (current_yyyymm, prior_yyyymm) = self.get_analysis_months(filters);
         let prior_year_yyyymm = current_yyyymm - 100;
         
-        let mut monthly_aggregates: HashMap<u32, HashMap<(String, u32), (u32, String, String, bool, bool)>> = HashMap::new();
+        let mut monthly_aggregates: HashMap<u32, HashMap<(String, u32), (u32, String, String, String, bool, bool)>> = HashMap::new();
         let mut unique_orgs = HashSet::new();
         let mut unique_orgs_prior_year = HashSet::new();
 
@@ -260,7 +259,7 @@ impl QueryEngine {
                         let key = (nk.clone(), series.county_key);
                         let is_valid = self.is_plan_valid_for_month(plan, m);
                         if is_valid || !month_map.contains_key(&key) {
-                            month_map.insert(key, (val, plan.parent_org.clone(), plan.plan_type.clone(), plan.is_egwp, plan.is_snp));
+                            month_map.insert(key, (val, plan.parent_org.clone(), plan.plan_type.clone(), plan.plan_name.clone(), plan.is_egwp, plan.is_snp));
                         }
                     }
                 }
@@ -275,7 +274,7 @@ impl QueryEngine {
         let (mut egwp, mut egwp_pdp, mut indiv_nsnp, mut pdp, mut snp_total) = (0u64, 0u64, 0u64, 0u64, 0u64);
 
         if let Some(current_data) = monthly_aggregates.get(&current_yyyymm) {
-            for ((nk, county_key), (val, org, pt, is_egwp, is_snp)) in current_data {
+            for ((nk, county_key), (val, org, pt, _, is_egwp, is_snp)) in current_data {
                 total_enrollment += *val as u64;
                 unique_plans.insert(nk.clone());
                 unique_counties.insert(*county_key);
@@ -303,11 +302,10 @@ impl QueryEngine {
         }
 
         let (mut dsnp, mut csnp, mut isnp) = (0u64, 0u64, 0u64);
-        if let (Some(current_data), Some(plan_lookup)) = (monthly_aggregates.get(&current_yyyymm), &self.plan_lookup) {
-            for ((nk, _), (val, _, _, _, is_snp)) in current_data {
+        if let Some(current_data) = monthly_aggregates.get(&current_yyyymm) {
+            for (_, (val, _, _, plan_name, _, is_snp)) in current_data {
                 if !*is_snp { continue; }
-                let parts: Vec<&str> = nk.split('|').collect();
-                let name = plan_lookup.values().find(|p| p.contract_id == parts[0] && p.plan_id == parts[1]).map(|p| p.plan_name.to_uppercase()).unwrap_or_default();
+                let name = plan_name.to_uppercase();
                 if name.contains("D-SNP") { dsnp += *val as u64; }
                 else if name.contains("C-SNP") { csnp += *val as u64; }
                 else if name.contains("I-SNP") { isnp += *val as u64; }
